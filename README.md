@@ -825,35 +825,70 @@ The implemented commands, prerequisites and configuration are documented in [doc
 
 # 10. Repository Structure
 
-Proposed repository organization:
+All Python code lives in a single installable `aegis` distribution under `src/aegis/` ([ADR-0001](docs/architecture/decisions/0001-phase-0-development-foundation.md)).
+
+## Current structure (Phase 0)
 
 ```text
-aegis/
-│
-├── apps/
-│   ├── api/
-│   ├── worker/
-│   ├── cli/
-│   └── dashboard/
-│
-├── packages/
-│   ├── agents/
-│   ├── orchestration/
-│   ├── risk_engine/
-│   ├── policy/
-│   ├── approvals/
-│   ├── provenance/
-│   ├── evidence/
-│   ├── tool_registry/
-│   ├── model_providers/
-│   ├── observability/
-│   └── audit/
-│
-├── integrations/
-│   ├── openshell/
-│   ├── ollama/
-│   ├── langfuse/
-│   └── opentelemetry/
+AEGIS/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── docs/
+│   ├── architecture/
+│   │   └── decisions/
+│   └── development/
+├── src/
+│   └── aegis/
+│       └── doctor/
+├── tests/
+│   ├── unit/
+│   └── integration/
+├── .env.example
+├── .gitignore
+├── .python-version
+├── AGENTS.md
+├── Makefile
+├── README.md
+├── docker-compose.yml
+├── pyproject.toml
+└── uv.lock
+```
+
+`src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. It is the only Python package implemented so far.
+
+## Planned additions
+
+None of the following exists yet. Each part is introduced in the phase that implements it, and empty packages are not created in advance.
+
+```text
+AEGIS/
+├── src/
+│   └── aegis/
+│       ├── apps/
+│       │   ├── api/
+│       │   ├── worker/
+│       │   ├── cli/
+│       │   └── dashboard/
+│       │
+│       ├── packages/
+│       │   ├── agents/
+│       │   ├── orchestration/
+│       │   ├── risk_engine/
+│       │   ├── policy/
+│       │   ├── approvals/
+│       │   ├── provenance/
+│       │   ├── evidence/
+│       │   ├── tool_registry/
+│       │   ├── model_providers/
+│       │   ├── observability/
+│       │   └── audit/
+│       │
+│       └── integrations/
+│           ├── openshell/
+│           ├── ollama/
+│           ├── langfuse/
+│           └── opentelemetry/
 │
 ├── benchmarks/
 │   ├── adversarial/
@@ -862,8 +897,6 @@ aegis/
 │   └── datasets/
 │
 ├── tests/
-│   ├── unit/
-│   ├── integration/
 │   ├── security/
 │   ├── e2e/
 │   └── fixtures/
@@ -874,37 +907,21 @@ aegis/
 │   └── openshell/
 │
 ├── docs/
-│   ├── architecture/
 │   ├── research/
 │   ├── security/
-│   ├── development/
 │   └── operations/
 │
 ├── scripts/
-│   ├── setup.sh
-│   ├── doctor.py
-│   └── demo.py
-│
-├── .github/
-│   └── workflows/
-│
-├── docker-compose.yml
-├── docker-compose.observability.yml
-├── Makefile
-├── .env.example
-├── pyproject.toml
-├── README.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
-├── LICENSE
-└── AGENTS.md
+└── LICENSE
 ```
 
+Whether the `packages/` grouping level is kept inside `src/aegis/` is decided in Phase 1. `CONTRIBUTING.md`, `SECURITY.md` and `LICENSE` wait on pending decisions; no license has been chosen.
+
+Optional services are added to the existing `docker-compose.yml` under Compose profiles, not in separate Compose files.
+
 The structure may evolve as implementation reveals better boundaries.
-
-Avoid creating empty packages simply to match this diagram. Introduce each module when its responsibility is implemented and tested.
-
-Python code lives in a single installable `aegis` distribution under `src/aegis/`; the groups above become subpackages as they are implemented ([ADR-0001](docs/architecture/decisions/0001-phase-0-development-foundation.md)).
 
 ---
 
@@ -1306,6 +1323,8 @@ The pipeline should validate application correctness, runtime security, model be
 | `benchmark.yml` | Adversarial and agent evaluation | Nightly or manual |
 | `release.yml` | Build, SBOM, signing and release validation | Release tag |
 
+Only `ci.yml` is implemented so far. In Phase 0 it runs the static checks, the unit tests and the PostgreSQL integration tests, so database integration currently lives in `ci.yml` rather than a separate `integration.yml`. It has not yet run on GitHub, because no remote is configured. The other workflows are planned.
+
 ## CI stages
 
 ```text
@@ -1539,58 +1558,63 @@ Sensitive data must be redacted or excluded from telemetry according to policy.
 
 A new contributor should be able to understand and run AEGIS without relying on the original developer.
 
-## Required developer commands
+## Developer commands
 
-The intended interface is:
+Implemented (see the [getting-started guide](docs/development/getting-started.md); `make help` lists them):
 
 ```bash
 make setup
 make doctor
 make up
+make down
 make test
-make demo
+make test-integration
+make lint
+make format
+make typecheck
+make check
 ```
 
-Optional:
+Planned, not implemented yet:
 
 ```bash
+make demo
 make up-local-ai
 make up-observability
 make up-full
-make test-integration
 make test-security
 make benchmark
-make down
 ```
+
+`make demo` becomes part of the required interface once the capabilities it demonstrates exist. The other planned commands are optional.
 
 ## Environment diagnostics
 
-The `aegis doctor` command should validate:
+`make doctor` runs the diagnostics in `src/aegis/doctor/`. It currently validates:
 
-- Runtime version.
+- Runtime versions (Python 3.13 and uv).
 - Docker availability.
 - Docker Compose availability.
 - Disk space.
 - Memory availability.
-- Required ports.
-- Database connectivity.
-- Migration status.
-- Model provider connectivity.
-- Model availability.
-- OpenShell availability when enabled.
-- Langfuse availability when enabled.
-- Environment configuration.
+- Required ports (the PostgreSQL host port).
+- Database availability (PostgreSQL health and a TCP connection; authentication is covered by `make test-integration`).
+- Environment configuration (`.env`).
 
-It should clearly distinguish between:
+It also runs two optional checks: whether it runs inside the project `.venv`, and whether `.env` grants access to other users.
 
-- Required checks.
-- Optional checks.
-- Skipped checks.
-- Failed checks.
+Planned checks are listed as "not checked" until their phase implements them:
+
+- Migration status (Phase 1).
+- Model provider connectivity and model availability (Phase 2).
+- OpenShell availability when enabled (Phase 3).
+- Langfuse availability when enabled (Phase 8).
+
+Every check is either required or optional, and is reported as passed, warning, failed or skipped. A required check that fails or cannot run makes `make doctor` exit non-zero.
 
 ## Demo requirements
 
-The local demonstration should produce:
+`make demo` is not implemented yet. The local demonstration should produce:
 
 - Task execution records.
 - Agent activity.
