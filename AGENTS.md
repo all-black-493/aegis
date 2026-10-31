@@ -463,7 +463,7 @@ Use the following structure as the target architecture.
 
 Do not create empty packages merely to match this tree.
 
-All Python code lives in the single installable `aegis` distribution under `src/aegis/`. Whether the `packages/` grouping level is kept inside `src/aegis/` is decided in Phase 1.
+All Python code lives in the single installable `aegis` distribution under `src/aegis/`. Components sit directly under `src/aegis/`; there is no `packages/` grouping level. Entry points live in `src/aegis/apps/`. Import rules between components are recorded in ADR-0002 and enforced by `tests/unit/test_layering.py`.
 
 ```text
 AEGIS/
@@ -475,18 +475,23 @@ AEGIS/
 │       │   ├── cli/
 │       │   └── dashboard/
 │       │
-│       ├── packages/
-│       │   ├── agents/
-│       │   ├── orchestration/
-│       │   ├── risk_engine/
-│       │   ├── policy/
-│       │   ├── approvals/
-│       │   ├── provenance/
-│       │   ├── evidence/
-│       │   ├── tool_registry/
-│       │   ├── model_providers/
-│       │   ├── observability/
-│       │   └── audit/
+│       ├── config/
+│       ├── db/
+│       ├── audit/
+│       ├── identity/
+│       ├── authorization/
+│       ├── policy/
+│       ├── tasks/
+│       ├── jobs/
+│       ├── agents/
+│       ├── orchestration/
+│       ├── risk_engine/
+│       ├── approvals/
+│       ├── provenance/
+│       ├── evidence/
+│       ├── tool_registry/
+│       ├── model_providers/
+│       ├── observability/
 │       │
 │       ├── integrations/
 │       │   ├── openshell/

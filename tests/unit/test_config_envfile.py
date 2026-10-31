@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from aegis.doctor.envfile import EnvFileError, parse_env_file
+from aegis.config.envfile import EnvFileError, parse_env_file
 
 SECRET = "s3cr3t-value-that-must-not-leak"
 

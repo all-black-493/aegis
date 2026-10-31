@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+PLACEHOLDER = "__GENERATED_BY_MAKE_SETUP__"
+
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -9,8 +11,12 @@ class EnvFileError(ValueError):
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
+    return parse_env_text(path.read_text(encoding="utf-8"))
+
+
+def parse_env_text(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
-    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue

@@ -1,8 +1,8 @@
 # Getting started
 
-AEGIS is in **Phase 0: local development foundation**. The repository provides a PostgreSQL service, an environment doctor, and the test and quality tooling.
+AEGIS has completed **Phase 0** and is building **Phase 1**. The repository provides a PostgreSQL service, an environment doctor, the configuration and logging foundation, and the test and quality tooling.
 
-There is no API, worker, agent execution, model provider, OpenShell integration, audit store, or other security control yet. Nothing in this phase executes untrusted workloads.
+There is no API, worker, agent execution, model provider, OpenShell integration, audit store, or other security control yet. Nothing executes untrusted workloads.
 
 ## Supported platform
 
@@ -41,7 +41,8 @@ make down
 | Command | What it does |
 |---|---|
 | `make help` | Lists the available targets. |
-| `make setup` | Installs the locked dependencies (`uv sync --locked`). Creates `.env` from `.env.example` with a generated PostgreSQL password, only if `.env` does not exist. Safe to rerun. |
+| `make setup` | Installs the locked dependencies (`uv sync --locked`). Creates `.env` from `.env.example`, generating every secret, only if `.env` does not exist. Safe to rerun. |
+| `make env-upgrade` | Appends variables that `.env.example` has and `.env` lacks, generating secrets where needed. Never changes, reorders or removes existing lines. Prints variable names, never values. Safe to rerun. |
 | `make doctor` | Diagnoses the local environment (see below). |
 | `make up` | Starts PostgreSQL and waits until its healthcheck passes. |
 | `make down` | Stops and removes the containers. The database volume is kept. |
@@ -60,12 +61,18 @@ Every target exits non-zero on failure.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `AEGIS_ENV` | `development` in `.env.example`; **`production` when unset** | `development`, `test` or `production`. Production refuses `DEBUG` logging. |
+| `AEGIS_LOG_LEVEL` | `INFO` (not in `.env.example`) | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `AEGIS_POSTGRES_USER` | `aegis` | PostgreSQL user |
 | `AEGIS_POSTGRES_DB` | `aegis` | PostgreSQL database |
-| `AEGIS_POSTGRES_PASSWORD` | generated | 48 hex characters from `/dev/urandom`, unique per checkout |
+| `AEGIS_POSTGRES_PASSWORD` | generated | 64 hex characters from a cryptographic random generator, unique per checkout. Older 48-character values remain valid. |
 | `AEGIS_POSTGRES_PORT` | `5433` | Host port, published on `127.0.0.1` only |
 
-Docker Compose refuses to start if any of these variables is missing or empty.
+Docker Compose refuses to start if any PostgreSQL variable is missing or empty.
+
+Every `AEGIS_*` variable is listed in `src/aegis/config/variables.py`. An `AEGIS_*` name that isn't listed there is rejected as a probable typo.
+
+These variables are operational configuration only. Security policy lives in code and cannot be changed through the environment.
 
 PostgreSQL reads the user, database and password only when it initializes an empty volume. Changing them later requires a data reset (see Troubleshooting).
 
@@ -76,7 +83,9 @@ To change the port, edit `.env` and run `make down` followed by `make up`.
 `make doctor` prints one line per check. Each check is **required** or **optional**, with a status of `PASS`, `WARN`, `FAIL` or `SKIP`.
 
 - **Required:** Python 3.13, uv, Docker Engine, Docker Compose v2, `.env` configuration, disk space, memory, the PostgreSQL host port, and the PostgreSQL service (Compose healthcheck plus a TCP connection from the host).
-- **Optional:** whether the doctor runs inside the project `.venv`, and whether `.env` grants any permission to other users or groups.
+- **Optional:** whether the doctor runs inside the project `.venv`, whether `.env` grants any permission to other users or groups, and whether `.env` defines every variable in `.env.example`.
+
+The `.env` configuration check also validates `AEGIS_ENV` and `AEGIS_LOG_LEVEL`, and rejects unknown `AEGIS_*` names.
 - **Not checked:** database migrations (Phase 1), the model provider (Phase 2), NVIDIA OpenShell (Phase 3) and Langfuse/OpenTelemetry (Phase 8). These are listed separately and never reported as passing.
 
 The doctor exits non-zero if any required check fails or could not run. Optional checks never change the exit code. The PostgreSQL password is redacted from all output.
@@ -85,12 +94,12 @@ The doctor does not authenticate to PostgreSQL. `make test-integration` does.
 
 ## Tests
 
-- **Unit tests** (`tests/unit`) are hermetic. A guard in `tests/unit/conftest.py` fails any test that opens a network connection or starts a subprocess.
+- **Unit tests** (`tests/unit`) are hermetic. A guard in `tests/unit/conftest.py` fails any test that opens a network connection or starts a subprocess. `tests/unit/test_layering.py` enforces the import rules recorded in ADR-0002.
 - **Integration tests** (`tests/integration`) use the real Docker CLI, `git`, `make` and PostgreSQL. They:
   - connect from the host and run `SELECT 1`;
   - check that PostgreSQL 17 is running and that a wrong password is rejected;
   - inspect the resolved Compose configuration;
-  - exercise the `.env` creation recipe;
+  - exercise the real `make setup` and `make env-upgrade` targets;
   - verify `.gitignore`.
 
   They fail, never skip, when PostgreSQL or the settings are missing.
@@ -125,6 +134,8 @@ To delete the local database, run `docker compose down --volumes`. This is irrev
 
 ## Troubleshooting
 
+- **`make doctor` warns that `.env` is missing variables.** New variables were added since your `.env` was created. Run `make env-upgrade`.
+- **`make env-upgrade` refuses because `.env` is accessible to other users.** Run `chmod 600 .env` and try again. Secrets are never appended to a file others can read.
 - **`uv` not found.** Make sure the directory the uv installer used (usually `~/.local/bin`) is on `PATH`.
 - **`VIRTUAL_ENV ... does not match the project environment` warning from uv.** Another virtualenv is active in your shell. uv ignores it and uses `.venv`. Run `deactivate` to silence the warning.
 - **Docker `permission denied`.** Add your user to the `docker` group and log in again, or use rootless Docker.

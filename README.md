@@ -789,7 +789,7 @@ AEGIS_LOG_LEVEL=INFO
 
 Real credentials must never be committed.
 
-The current `.env.example` contains only the PostgreSQL settings that are read today; the other variables above remain proposals.
+The current `.env.example` contains only the variables that are read today (`AEGIS_ENV` and the PostgreSQL settings); the other variables above remain proposals.
 
 Agent-visible configuration must not contain raw infrastructure or model-provider secrets.
 
@@ -825,9 +825,9 @@ The implemented commands, prerequisites and configuration are documented in [doc
 
 # 10. Repository Structure
 
-All Python code lives in a single installable `aegis` distribution under `src/aegis/` ([ADR-0001](docs/architecture/decisions/0001-phase-0-development-foundation.md)).
+All Python code lives in a single installable `aegis` distribution under `src/aegis/` ([ADR-0001](docs/architecture/decisions/0001-phase-0-development-foundation.md)). Components sit directly under `src/aegis/`, with entry points in `src/aegis/apps/`; there is no `packages/` grouping level ([ADR-0002](docs/architecture/decisions/0002-layering-configuration-and-logging.md)).
 
-## Current structure (Phase 0)
+## Current structure
 
 ```text
 AEGIS/
@@ -840,6 +840,7 @@ AEGIS/
 │   └── development/
 ├── src/
 │   └── aegis/
+│       ├── config/
 │       └── doctor/
 ├── tests/
 │   ├── unit/
@@ -855,7 +856,7 @@ AEGIS/
 └── uv.lock
 ```
 
-`src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. It is the only Python package implemented so far.
+`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
 
 ## Planned additions
 
@@ -871,18 +872,22 @@ AEGIS/
 │       │   ├── cli/
 │       │   └── dashboard/
 │       │
-│       ├── packages/
-│       │   ├── agents/
-│       │   ├── orchestration/
-│       │   ├── risk_engine/
-│       │   ├── policy/
-│       │   ├── approvals/
-│       │   ├── provenance/
-│       │   ├── evidence/
-│       │   ├── tool_registry/
-│       │   ├── model_providers/
-│       │   ├── observability/
-│       │   └── audit/
+│       ├── db/
+│       ├── audit/
+│       ├── identity/
+│       ├── authorization/
+│       ├── policy/
+│       ├── tasks/
+│       ├── jobs/
+│       ├── agents/
+│       ├── orchestration/
+│       ├── risk_engine/
+│       ├── approvals/
+│       ├── provenance/
+│       ├── evidence/
+│       ├── tool_registry/
+│       ├── model_providers/
+│       ├── observability/
 │       │
 │       └── integrations/
 │           ├── openshell/
@@ -917,7 +922,7 @@ AEGIS/
 └── LICENSE
 ```
 
-Whether the `packages/` grouping level is kept inside `src/aegis/` is decided in Phase 1. `CONTRIBUTING.md`, `SECURITY.md` and `LICENSE` wait on pending decisions; no license has been chosen.
+`CONTRIBUTING.md`, `SECURITY.md` and `LICENSE` wait on pending decisions; no license has been chosen.
 
 Optional services are added to the existing `docker-compose.yml` under Compose profiles, not in separate Compose files.
 
@@ -1564,6 +1569,7 @@ Implemented (see the [getting-started guide](docs/development/getting-started.md
 
 ```bash
 make setup
+make env-upgrade
 make doctor
 make up
 make down

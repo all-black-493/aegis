@@ -3,22 +3,16 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from aegis.doctor.envfile import EnvFileError, parse_env_file
+from aegis.config.envfile import PLACEHOLDER, EnvFileError, parse_env_file
+from aegis.config.settings import SettingsError, load_common_settings
+from aegis.config.variables import REQUIRED_NAMES, SECRET_NAMES
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
 from aegis.doctor.system import System
 
 REQUIRED_PYTHON = (3, 13)
 POSTGRES_HOST = "127.0.0.1"
 POSTGRES_SERVICE = "postgres"
-ENV_KEYS = (
-    "AEGIS_POSTGRES_USER",
-    "AEGIS_POSTGRES_DB",
-    "AEGIS_POSTGRES_PASSWORD",
-    "AEGIS_POSTGRES_PORT",
-)
-SECRET_ENV_KEYS = frozenset({"AEGIS_POSTGRES_PASSWORD"})
-PASSWORD_PLACEHOLDER = "__GENERATED_BY_MAKE_SETUP__"  # noqa: S105 - public placeholder
-MIN_PASSWORD_LENGTH = 16
+MIN_SECRET_LENGTH = 16
 GIB = 1024**3
 MIN_FREE_DISK_BYTES = 2 * GIB
 MIN_TOTAL_MEMORY_BYTES = 2 * GIB
@@ -72,13 +66,14 @@ def run_checks(system: System, root: Path) -> Diagnosis:
         compose_result,
         env_result,
         check_env_permissions(root),
+        check_env_template(root, env_values),
         check_disk(system, root, docker.root_dir),
         check_memory(system),
         check_postgres_port(system, port, postgres),
         check_postgres_service(system, port, postgres),
     )
     secrets = frozenset(
-        value for key, value in (env_values or {}).items() if key in SECRET_ENV_KEYS and value
+        value for key, value in (env_values or {}).items() if key in SECRET_NAMES and value
     )
     return Diagnosis(results, secrets)
 
@@ -185,6 +180,22 @@ def check_env_permissions(root: Path) -> CheckResult:
             f"mode {mode:o} lets other users access it; run `chmod 600 .env`",
         )
     return CheckResult(name, OPTIONAL, PASS, f"mode {mode:o}")
+
+
+def check_env_template(root: Path, env_values: dict[str, str] | None) -> CheckResult:
+    name = ".env up to date"
+    if env_values is None:
+        return CheckResult(name, OPTIONAL, SKIP, "blocked by: .env configuration")
+    try:
+        template = parse_env_file(root / ".env.example")
+    except (OSError, UnicodeDecodeError, EnvFileError):
+        return CheckResult(name, OPTIONAL, SKIP, ".env.example could not be read")
+    missing = [key for key in template if key not in env_values]
+    if missing:
+        return CheckResult(
+            name, OPTIONAL, WARN, f"missing {', '.join(missing)}; run `make env-upgrade`"
+        )
+    return CheckResult(name, OPTIONAL, PASS, "defines every variable in .env.example")
 
 
 def check_disk(system: System, root: Path, docker_root: Path | None) -> CheckResult:
@@ -325,18 +336,20 @@ def _probe_postgres(
 
 
 def _env_problem(values: dict[str, str]) -> str | None:
-    missing = [key for key in ENV_KEYS if not values.get(key)]
+    missing = [key for key in REQUIRED_NAMES if not values.get(key)]
     if missing:
         return f"missing or empty: {', '.join(missing)}"
-    password = values["AEGIS_POSTGRES_PASSWORD"]
-    if password == PASSWORD_PLACEHOLDER:
-        return (
-            "AEGIS_POSTGRES_PASSWORD is still the placeholder; see getting-started troubleshooting"
-        )
-    if len(password) < MIN_PASSWORD_LENGTH:
-        return f"AEGIS_POSTGRES_PASSWORD is shorter than {MIN_PASSWORD_LENGTH} characters"
+    for key in sorted(SECRET_NAMES & values.keys()):
+        if values[key] == PLACEHOLDER:
+            return f"{key} is still the placeholder; see getting-started troubleshooting"
+        if len(values[key]) < MIN_SECRET_LENGTH:
+            return f"{key} is shorter than {MIN_SECRET_LENGTH} characters"
     if _port(values) is None:
         return "AEGIS_POSTGRES_PORT must be an integer from 1024 to 65535"
+    try:
+        load_common_settings(values)
+    except SettingsError as error:
+        return "; ".join(error.problems)
     return None
 
 
