@@ -1,0 +1,23 @@
+name: aegis
+
+services:
+  postgres:
+    image: postgres:17.11-trixie@sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f
+    environment:
+      POSTGRES_USER: ${AEGIS_POSTGRES_USER:?AEGIS_POSTGRES_USER must be set; run make setup}
+      POSTGRES_PASSWORD: ${AEGIS_POSTGRES_PASSWORD:?AEGIS_POSTGRES_PASSWORD must be set; run make setup}
+      POSTGRES_DB: ${AEGIS_POSTGRES_DB:?AEGIS_POSTGRES_DB must be set; run make setup}
+    ports:
+      - "127.0.0.1:${AEGIS_POSTGRES_PORT:?AEGIS_POSTGRES_PORT must be set; run make setup}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # TCP, not the socket: the first-boot init server listens on the socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  postgres-data:
