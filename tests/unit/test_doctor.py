@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from aegis.config.variables import TEMPLATE_NAMES
 from aegis.doctor.__main__ import main
 from aegis.doctor.checks import GIB, run_checks
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
@@ -77,6 +78,7 @@ class FakeSystem:
 
 def write_env(root: Path, **overrides: str | None) -> None:
     values: dict[str, str | None] = {
+        "AEGIS_ENV": "development",
         "AEGIS_POSTGRES_USER": "aegis",
         "AEGIS_POSTGRES_DB": "aegis",
         "AEGIS_POSTGRES_PASSWORD": PASSWORD,
@@ -95,6 +97,7 @@ def result(diagnosis: Diagnosis, name: str) -> CheckResult:
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
     (tmp_path / "docker-compose.yml").touch()
+    (tmp_path / ".env.example").write_text("".join(f"{name}=x\n" for name in TEMPLATE_NAMES))
     write_env(tmp_path)
     return tmp_path
 
@@ -226,6 +229,9 @@ def test_missing_env_file_fails_and_blocks_postgres_checks(system: FakeSystem, r
         ({"AEGIS_POSTGRES_PORT": "80"}, "from 1024 to 65535"),
         ({"AEGIS_POSTGRES_PORT": "70000"}, "from 1024 to 65535"),
         ({"AEGIS_POSTGRES_PORT": "²"}, "from 1024 to 65535"),
+        ({"AEGIS_ENV": "staging"}, "AEGIS_ENV must be one of"),
+        ({"AEGIS_ENV": "production", "AEGIS_LOG_LEVEL": "DEBUG"}, "not allowed in production"),
+        ({"AEGIS_TYPO": "1"}, "AEGIS_TYPO is not a known AEGIS variable"),
     ],
 )
 def test_invalid_env_configuration_fails(
@@ -248,6 +254,31 @@ def test_unparseable_env_file_does_not_leak_its_contents(system: FakeSystem, roo
 
     assert result(diagnosis, ".env configuration").status is Status.FAIL
     assert "leaky secret value" not in render(diagnosis)
+
+
+def test_env_missing_template_variables_warns_without_failing(
+    system: FakeSystem, root: Path
+) -> None:
+    write_env(root, AEGIS_ENV=None)
+
+    diagnosis = run_checks(system, root)
+
+    assert result(diagnosis, ".env configuration").status is Status.PASS
+    up_to_date = result(diagnosis, ".env up to date")
+    assert up_to_date.requirement is Requirement.OPTIONAL
+    assert up_to_date.status is Status.WARN
+    assert "AEGIS_ENV" in up_to_date.detail
+    assert "make env-upgrade" in up_to_date.detail
+    assert diagnosis.exit_code == 0
+
+
+def test_env_template_check_is_skipped_without_a_template(system: FakeSystem, root: Path) -> None:
+    (root / ".env.example").unlink()
+
+    diagnosis = run_checks(system, root)
+
+    assert result(diagnosis, ".env up to date").status is Status.SKIP
+    assert diagnosis.exit_code == 0
 
 
 def test_world_readable_env_warns_without_failing(system: FakeSystem, root: Path) -> None:
