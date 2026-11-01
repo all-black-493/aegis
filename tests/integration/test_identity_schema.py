@@ -221,7 +221,7 @@ def test_revocation_is_permanent(owner: psycopg.Connection[TupleRow]) -> None:
     [
         ("DELETE FROM aegis.credentials", "never deleted"),
         ("DELETE FROM aegis.identities WHERE kind = 'human'", "never deleted"),
-        ("TRUNCATE aegis.credentials", "never deleted"),
+        ("TRUNCATE aegis.credentials CASCADE", "never deleted"),
         ("TRUNCATE aegis.identities CASCADE", "never deleted"),
         ("UPDATE aegis.identities SET name = name || '-x'", "only an identity's status"),
         ("UPDATE aegis.identities SET kind = 'service' WHERE kind = 'human'", "status can change"),

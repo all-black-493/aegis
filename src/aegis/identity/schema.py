@@ -1,6 +1,15 @@
 from uuid import UUID
 
-from sqlalchemy import Column, ForeignKey, Index, LargeBinary, Table, Text, text
+from sqlalchemy import (
+    Column,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    Table,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
@@ -19,6 +28,7 @@ identities = Table(
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")),
     Column("created_by", PG_UUID(as_uuid=True), ForeignKey("aegis.identities.id")),
     Column("disabled_at", TIMESTAMP(timezone=True)),
+    UniqueConstraint("id", "kind", name="uq_identities_id_kind"),
 )
 
 identity_roles = Table(
@@ -49,5 +59,6 @@ credentials = Table(
     Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
     Column("revoked_at", TIMESTAMP(timezone=True)),
     Column("revoked_by", PG_UUID(as_uuid=True), ForeignKey("aegis.identities.id")),
+    UniqueConstraint("id", "identity_id", name="uq_credentials_id_identity_id"),
     Index("ix_credentials_identity_id", "identity_id"),
 )
