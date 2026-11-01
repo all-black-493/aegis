@@ -55,6 +55,7 @@ FAST = WorkerSettings(
     max_attempts=3,
 )
 S = TaskState
+pytestmark = pytest.mark.usefixtures("isolated_jobs")
 
 
 @dataclass(frozen=True)
@@ -76,20 +77,6 @@ class Spy:
     def __call__(self, task_input: Mapping[str, Any], context: HandlerContext) -> Mapping[str, Any]:
         self.calls += 1
         return self._behaviour(task_input, context)
-
-
-@pytest.fixture(autouse=True)
-def _only_this_tests_jobs(owner_engine: Engine) -> None:
-    # Every integration test shares one database; jobs left open by earlier tests would otherwise
-    # be claimed or recovered here.
-    with owner_engine.begin() as connection:
-        connection.execute(
-            text(
-                "UPDATE aegis.jobs SET state = 'finished', lease_owner = NULL,"
-                " lease_expires_at = NULL, last_error_code = 'test_isolation'"
-                " WHERE state IN ('pending', 'running')"
-            )
-        )
 
 
 @pytest.fixture

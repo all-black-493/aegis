@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 
 from aegis.config.settings import (
     DatabaseRole,
@@ -20,7 +20,8 @@ def _settings(role: DatabaseRole) -> DatabaseSettings:
     try:
         return load_database_settings(os.environ, role)
     except SettingsError as error:
-        pytest.fail(f"{error}; run integration tests with `make test-integration`")
+        hint = "run database tests with `make test-integration` or `make test-security`"
+        pytest.fail(f"{error}; {hint}")
 
 
 @pytest.fixture(scope="session")
@@ -65,3 +66,17 @@ def app_engine(app_settings: DatabaseSettings) -> Iterator[Engine]:
     engine = create_database_engine(app_settings, application_name="aegis-tests")
     yield engine
     engine.dispose()
+
+
+@pytest.fixture
+def isolated_jobs(owner_engine: Engine) -> None:
+    # One test database serves the whole session; jobs left open by earlier tests would otherwise
+    # be claimed or recovered by the workers a test starts.
+    with owner_engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE aegis.jobs SET state = 'finished', lease_owner = NULL,"
+                " lease_expires_at = NULL, last_error_code = 'test_isolation'"
+                " WHERE state IN ('pending', 'running')"
+            )
+        )

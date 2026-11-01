@@ -1,6 +1,6 @@
 # Getting started
 
-AEGIS has completed **Phase 0** and is building **Phase 1**. The repository provides:
+AEGIS has implemented **Phase 0** (the local development foundation) and **Phase 1** (API, worker, database and configuration). The repository provides:
 
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
@@ -12,9 +12,10 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
 - an environment doctor;
 - the configuration and logging foundation;
-- the test and quality tooling.
+- the test and quality tooling, including a security suite and an end-to-end test;
+- the Phase 1 threat model, `docs/security/phase-1-threat-model.md`.
 
-The worker runs only `noop` and `wait`, which have no effects outside AEGIS. There is no agent execution, model provider, OpenShell integration, or other security control yet. Nothing executes untrusted workloads.
+The worker runs only `noop` and `wait`, which have no effects outside AEGIS. There is no agent execution, model provider or OpenShell integration yet, and AEGIS claims no filesystem, network or process isolation. Nothing executes untrusted workloads. The API and worker run as processes on the host; containers for them are planned, not built.
 
 ## Supported platform
 
@@ -46,6 +47,7 @@ make migrate
 make doctor
 make test
 make test-integration
+make test-security
 make down
 ```
 
@@ -63,7 +65,8 @@ make down
 | `make worker` | Runs the task worker in the foreground. Ctrl-C or SIGTERM stops it gracefully. Requires `make up` and `make migrate`; run as many as you like. |
 | `make down` | Stops and removes the containers. The database volume is kept. |
 | `make test` | Runs the unit tests. Needs no Docker, database, model, network or credentials. |
-| `make test-integration` | Runs the integration tests against the running PostgreSQL. Requires `make up`. |
+| `make test-integration` | Runs the integration tests and the end-to-end test against the running PostgreSQL. Requires `make up`. |
+| `make test-security` | Runs the security suite (`tests/security`) against the running PostgreSQL. Requires `make up`. |
 | `make lint` | Checks formatting and lint rules with Ruff. |
 | `make format` | Sorts imports and formats the code with Ruff. |
 | `make typecheck` | Type-checks `src/` and `tests/` with mypy in strict mode. |
@@ -183,7 +186,7 @@ See ADR-0005 for the design and its limitations.
 
 ## The API
 
-`make api` serves the API on `127.0.0.1` only. It connects as `aegis_app` and holds the token pepper; it never has owner or superuser credentials.
+`make api` serves the API on `127.0.0.1` only. It connects as `aegis_app` and holds the token pepper; it never has owner or superuser credentials, and it removes every secret variable from its environment once its settings are loaded.
 
 | Route | Authentication | Result |
 |---|---|---|
@@ -222,7 +225,7 @@ See ADR-0004 and ADR-0011 for the design and its limitations.
 
 ## The worker
 
-`make worker` runs a worker that claims queued tasks and runs them. It connects as `aegis_app`, loads no other secret, and removes every secret variable from its own environment before running anything.
+`make worker` runs a worker that claims queued tasks and runs them. It connects as `aegis_app`, loads no other secret, and removes every secret variable from its own environment before running anything. (`/proc/self/environ` still holds the initial copy; see the threat model.)
 
 - **Delegated execution.** The worker acts as `system:worker`, never as the person who submitted the task. Before each task runs, it decides `task.execute` again with the current policy: the worker must hold the `worker` role, and the submitter must still be active, still hold `task:create`, and still have an unrevoked submitting credential. If not, the task fails with that reason and nothing runs. A newer policy can also hold the task for approval.
 - **Leases.** A claimed task is leased for `AEGIS_WORKER_LEASE_SECONDS`, renewed at every heartbeat by the database clock. Every write by the worker is fenced on the job's attempt and lease, so a worker that has lost its lease cannot record anything more.
@@ -249,7 +252,7 @@ The `.env` configuration check also validates `AEGIS_ENV` and `AEGIS_LOG_LEVEL`,
 
 The doctor exits non-zero if any required check fails or could not run. Optional checks never change the exit code. Secrets are redacted from all output.
 
-The doctor does not authenticate as the AEGIS roles. `make test-integration` does.
+The doctor does not authenticate as the AEGIS roles. `make test-integration` and `make test-security` do.
 
 ## Tests
 
@@ -269,7 +272,15 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event;
   - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process.
 
-  They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
+- **The end-to-end test** (`tests/e2e`, run by `make test-integration`) uses only real processes: the `aegis` CLI creates identities and issues tokens, then the API and worker processes run tasks over HTTP on loopback. A worker is killed with SIGKILL during a task, and a second worker finishes it. The test also checks the audit chain and that no process output contains a credential.
+- **The security suite** (`tests/security`, run by `make test-security`) holds the cross-cutting checks that the threat model (`docs/security/phase-1-threat-model.md`) relies on:
+  - the exact privileges of `aegis_app`;
+  - attacks made with stolen `aegis_app` credentials: approval bypass, forged tasks, unregistered kinds;
+  - spoofed request IDs;
+  - a sweep of every table, log and response for credentials;
+  - failure injection: database down, database lost during a run, audit writes failing in the worker, evaluator errors, and a worker started on an outdated schema.
+
+Integration, end-to-end and security tests fail, never skip, when PostgreSQL or the settings are missing. They share the `<AEGIS_POSTGRES_DB>_test` database, recreated for each run; one security test also recreates `<AEGIS_POSTGRES_DB>_outdated_test`. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 
 ## Validating an environment
 
@@ -281,7 +292,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
 | `make doctor` | Every required check reports `PASS`, and the result line reads `Result: OK`. |
 | `make check` | Exit 0. |
 | `make test` | All unit tests pass. |
-| `make test-integration` | All integration tests pass. |
+| `make test-integration` | All integration and end-to-end tests pass. |
+| `make test-security` | All security tests pass. |
 | `make api`, then `curl http://127.0.0.1:8000/health/ready` | `{"status":"ready"}` |
 | `make down`, then `make up` | Previously stored data is still present. |
 
@@ -291,7 +303,7 @@ CI (`.github/workflows/ci.yml`) runs the same Make targets on every push to `mai
 
 1. **Static checks:** `make lint` and `make typecheck`.
 2. **Unit tests:** `make test`.
-3. **Integration tests:** `make setup`, `make up`, `make migrate`, `make doctor` and `make test-integration`, with freshly generated secrets.
+3. **Integration tests:** `make setup`, `make up`, `make migrate`, `make doctor`, `make test-integration` and `make test-security`, with freshly generated secrets.
 
 The workflow has read-only repository permissions and uses no secrets. Every action is pinned to a commit SHA, and caching is disabled.
 

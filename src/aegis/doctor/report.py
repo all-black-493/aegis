@@ -12,7 +12,7 @@ NOT_CHECKED = (
 
 
 def render(diagnosis: Diagnosis) -> str:
-    lines = ["AEGIS doctor (Phase 0)", ""]
+    lines = ["AEGIS doctor (Phase 1)", ""]
     for requirement in Requirement:
         results = [result for result in diagnosis.results if result.requirement is requirement]
         if not results:

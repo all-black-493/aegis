@@ -837,7 +837,8 @@ AEGIS/
 ├── docs/
 │   ├── architecture/
 │   │   └── decisions/
-│   └── development/
+│   ├── development/
+│   └── security/
 ├── src/
 │   └── aegis/
 │       ├── apps/
@@ -854,8 +855,11 @@ AEGIS/
 │       ├── policy/
 │       └── tasks/
 ├── tests/
+│   ├── conftest.py
 │   ├── unit/
-│   └── integration/
+│   ├── integration/
+│   ├── security/
+│   └── e2e/
 ├── .env.example
 ├── .gitignore
 ├── .python-version
@@ -903,8 +907,6 @@ AEGIS/
 │   └── datasets/
 │
 ├── tests/
-│   ├── security/
-│   ├── e2e/
 │   └── fixtures/
 │
 ├── deploy/
@@ -914,7 +916,6 @@ AEGIS/
 │
 ├── docs/
 │   ├── research/
-│   ├── security/
 │   └── operations/
 │
 ├── scripts/
@@ -1579,6 +1580,7 @@ make worker
 make down
 make test
 make test-integration
+make test-security
 make lint
 make format
 make typecheck
@@ -1592,7 +1594,6 @@ make demo
 make up-local-ai
 make up-observability
 make up-full
-make test-security
 make benchmark
 ```
 
@@ -1609,13 +1610,13 @@ make benchmark
 - Memory availability.
 - Required ports (the PostgreSQL host port).
 - Database availability (PostgreSQL health and a TCP connection; authentication is covered by `make test-integration`).
-- Environment configuration (`.env`).
+- Migration status (the schema is at the latest revision).
+- Environment configuration (`.env`, including the API and worker settings).
 
 It also runs two optional checks: whether it runs inside the project `.venv`, and whether `.env` grants access to other users.
 
 Planned checks are listed as "not checked" until their phase implements them:
 
-- Migration status (Phase 1).
 - Model provider connectivity and model availability (Phase 2).
 - OpenShell availability when enabled (Phase 3).
 - Langfuse availability when enabled (Phase 8).
@@ -1748,7 +1749,7 @@ AEGIS is an evolving research and engineering project.
 
 The architecture describes the intended end state. Components must be implemented incrementally and marked complete only after their acceptance tests pass.
 
-Phase 0 is implemented: see [docs/development/getting-started.md](docs/development/getting-started.md). No later phase has started.
+Phases 0 and 1 are implemented: see [docs/development/getting-started.md](docs/development/getting-started.md) and the [Phase 1 threat model](docs/security/phase-1-threat-model.md). Phase 2 has not started. No phase provides runtime isolation; OpenShell enforcement arrives in Phase 3.
 
 | Capability | Target status |
 |---|---|
@@ -1756,6 +1757,7 @@ Phase 0 is implemented: see [docs/development/getting-started.md](docs/developme
 | Progressive implementation plan | Defined |
 | Local-first development strategy | Defined |
 | Local development foundation (Phase 0) | Implemented |
+| API, worker, database and configuration (Phase 1) | Implemented |
 | Ollama integration | Planned |
 | NVIDIA OpenShell integration | Planned |
 | Agent orchestration | Planned |
@@ -1766,7 +1768,7 @@ Phase 0 is implemented: see [docs/development/getting-started.md](docs/developme
 | Langfuse integration | Planned |
 | OpenTelemetry integration | Planned |
 | Adversarial benchmark | Planned |
-| CI/CD automation | Planned |
+| CI/CD automation | Partially implemented: CI runs the checks and every test suite; delivery and supply-chain scanning are Phase 11 |
 | Reproducible research evaluation | Planned |
 
 Project status must be updated as implementation progresses. Do not mark planned features as implemented without working code and passing acceptance tests.
