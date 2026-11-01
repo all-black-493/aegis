@@ -5,7 +5,6 @@ from aegis.doctor.model import Diagnosis, Requirement, Status
 REDACTED = "[REDACTED]"
 
 NOT_CHECKED = (
-    ("Database migrations", "Phase 1"),
     ("Model provider (mock, Ollama)", "Phase 2"),
     ("NVIDIA OpenShell", "Phase 3; untrusted execution is unavailable until then"),
     ("Langfuse and OpenTelemetry", "Phase 8"),

@@ -17,6 +17,21 @@ UV_VERSION = ("uv", "--version")
 DOCKER_INFO = ("docker", "info", "--format", "{{json .}}")
 COMPOSE_VERSION = ("docker", "compose", "version", "--short")
 COMPOSE_PS = ("docker", "compose", "ps", "--all", "--format", "json", "postgres")
+SCHEMA_VERSION = (
+    "docker",
+    "compose",
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "-U",
+    "aegis",
+    "-d",
+    "aegis",
+    "-XAtq",
+    "-c",
+    "SELECT version_num FROM aegis.alembic_version",
+)
 
 
 def _ok(stdout: str) -> CommandResult:
@@ -35,6 +50,7 @@ def _default_commands() -> dict[tuple[str, ...], CommandResult]:
         ),
         COMPOSE_VERSION: _ok("2.38.2\n"),
         COMPOSE_PS: _ps(),
+        SCHEMA_VERSION: _ok("0001\n"),
     }
 
 
@@ -83,6 +99,8 @@ def write_env(root: Path, **overrides: str | None) -> None:
         "AEGIS_POSTGRES_DB": "aegis",
         "AEGIS_POSTGRES_PASSWORD": PASSWORD,
         "AEGIS_POSTGRES_PORT": "5433",
+        "AEGIS_DB_OWNER_PASSWORD": "owner-password-0123456789abcdef",
+        "AEGIS_DB_APP_PASSWORD": "app-password-0123456789abcdef",
         **overrides,
     }
     path = root / ".env"
@@ -347,6 +365,40 @@ def test_postgres_not_accepting_connections_fails(system: FakeSystem, root: Path
     assert diagnosis.exit_code == 1
 
 
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (CommandResult(1, "", 'ERROR:  schema "aegis" does not exist'), "run `make migrate`"),
+        (CommandResult(1, "", 'ERROR:  relation "x" does not exist'), "run `make migrate`"),
+        (_ok(""), "not applied"),
+        (_ok("0000\n"), "at revision 0000, latest is 0001"),
+        (CommandResult(2, "", "psql: error: connection refused"), "could not read"),
+    ],
+)
+def test_pending_or_unreadable_migrations_fail(
+    system: FakeSystem, root: Path, response: CommandResult, message: str
+) -> None:
+    system.commands[SCHEMA_VERSION] = response
+
+    diagnosis = run_checks(system, root)
+
+    migrations = result(diagnosis, "Database migrations")
+    assert migrations.status is Status.FAIL
+    assert message in migrations.detail
+    assert diagnosis.exit_code == 1
+
+
+def test_migration_check_is_blocked_when_postgres_is_unhealthy(
+    system: FakeSystem, root: Path
+) -> None:
+    system.commands[COMPOSE_PS] = _ps("running", "starting")
+
+    diagnosis = run_checks(system, root)
+
+    assert result(diagnosis, "Database migrations").status is Status.SKIP
+    assert diagnosis.exit_code == 1
+
+
 def test_compose_query_failure_fails_postgres_service(system: FakeSystem, root: Path) -> None:
     system.commands[COMPOSE_PS] = CommandResult(1, "", "compose exploded")
 
@@ -415,7 +467,7 @@ def test_unimplemented_integrations_are_listed_but_not_checked(
 
     assert "NVIDIA OpenShell" in output
     assert "untrusted execution is unavailable" in output
-    for name in ("OpenShell", "Ollama", "Langfuse", "migration"):
+    for name in ("OpenShell", "Ollama", "Langfuse"):
         assert not any(name.lower() in r.name.lower() for r in diagnosis.results)
     assert diagnosis.exit_code == 0
 

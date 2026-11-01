@@ -6,8 +6,8 @@ UV ?= uv
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ENVTOOL = $(UV) run --project $(ROOT) --locked python -m aegis.config.envtool
 
-.PHONY: help setup env-file env-upgrade doctor up down test test-integration lint format typecheck \
-	check require-uv require-env
+.PHONY: help setup env-file env-upgrade doctor up migrate down test test-integration lint format \
+	typecheck check require-uv require-env
 
 help: ## Show available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -28,6 +28,10 @@ doctor: require-uv ## Diagnose the local development environment
 
 up: require-env ## Start PostgreSQL and wait until it is healthy
 	docker compose up --detach --wait
+
+migrate: require-uv require-env ## Create or update database roles, then apply migrations
+	$(UV) run --locked --env-file .env aegis db bootstrap
+	$(UV) run --locked --env-file .env aegis db migrate
 
 down: require-env ## Stop services (the database volume is kept)
 	docker compose down
