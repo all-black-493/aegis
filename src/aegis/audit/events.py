@@ -18,6 +18,7 @@ class AuditEventType(StrEnum):
     AUTH_FAILED = "auth.failed"
     CREDENTIAL_ISSUED = "credential.issued"
     CREDENTIAL_REVOKED = "credential.revoked"
+    CREDENTIAL_LISTED = "credential.listed"
     IDENTITY_CREATED = "identity.created"
     IDENTITY_DISABLED = "identity.disabled"
     IDENTITY_ENABLED = "identity.enabled"
@@ -59,6 +60,7 @@ ALLOWED_DETAILS: Mapping[AuditEventType, frozenset[str]] = MappingProxyType(
         AuditEventType.AUTH_FAILED: frozenset(),
         AuditEventType.CREDENTIAL_ISSUED: frozenset({"expires_at"}),
         AuditEventType.CREDENTIAL_REVOKED: frozenset(),
+        AuditEventType.CREDENTIAL_LISTED: frozenset(),
         AuditEventType.IDENTITY_CREATED: frozenset({"kind", "name"}),
         AuditEventType.IDENTITY_DISABLED: frozenset(),
         AuditEventType.IDENTITY_ENABLED: frozenset(),

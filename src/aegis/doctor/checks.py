@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aegis.config.envfile import PLACEHOLDER, EnvFileError, parse_env_file
-from aegis.config.settings import SettingsError, load_common_settings
+from aegis.config.settings import SettingsError, load_common_settings, load_token_pepper
 from aegis.config.variables import REQUIRED_NAMES, SECRET_NAMES
 from aegis.db.migrate import head_revision
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
@@ -352,6 +352,7 @@ def _env_problem(values: dict[str, str]) -> str | None:
         return "AEGIS_POSTGRES_PORT must be an integer from 1024 to 65535"
     try:
         load_common_settings(values)
+        load_token_pepper(values)
     except SettingsError as error:
         return "; ".join(error.problems)
     return None

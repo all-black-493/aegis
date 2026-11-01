@@ -9,6 +9,7 @@ OWNER_ROLE = "aegis_owner"
 APP_ROLE = "aegis_app"
 DATABASE_HOST = "127.0.0.1"
 MIN_SECRET_LENGTH = 16
+MIN_PEPPER_LENGTH = 32
 
 
 class Environment(StrEnum):
@@ -94,6 +95,14 @@ def load_common_settings(environ: Mapping[str, str]) -> CommonSettings:
     return CommonSettings(environment=environment, log_level=log_level)
 
 
+def load_token_pepper(environ: Mapping[str, str]) -> Secret:
+    problems = unknown_variables(environ)
+    pepper = _secret(environ, "AEGIS_TOKEN_PEPPER", problems, MIN_PEPPER_LENGTH)
+    if problems:
+        raise SettingsError(problems)
+    return Secret(pepper)
+
+
 def unknown_variables(environ: Mapping[str, str]) -> list[str]:
     return [
         f"{name} is not a known AEGIS variable"
@@ -117,14 +126,19 @@ def _port(environ: Mapping[str, str], name: str, problems: list[str]) -> int:
     return 0
 
 
-def _secret(environ: Mapping[str, str], name: str, problems: list[str]) -> str:
+def _secret(
+    environ: Mapping[str, str],
+    name: str,
+    problems: list[str],
+    min_length: int = MIN_SECRET_LENGTH,
+) -> str:
     value = environ.get(name, "")
     if not value:
         problems.append(f"{name} is required; run `make env-upgrade`")
     elif value == PLACEHOLDER:
         problems.append(f"{name} is still the placeholder")
-    elif len(value) < MIN_SECRET_LENGTH:
-        problems.append(f"{name} must be at least {MIN_SECRET_LENGTH} characters")
+    elif len(value) < min_length:
+        problems.append(f"{name} must be at least {min_length} characters")
     return value
 
 

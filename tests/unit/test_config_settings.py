@@ -11,6 +11,7 @@ from aegis.config.settings import (
     SettingsError,
     load_common_settings,
     load_database_settings,
+    load_token_pepper,
     unknown_variables,
 )
 from aegis.config.variables import VARIABLES
@@ -165,3 +166,24 @@ def test_secrets_never_appear_in_representations() -> None:
     for text in (repr(settings), str(settings), repr(settings.password), f"{settings.password}"):
         assert password not in text
     assert "[REDACTED]" in repr(settings)
+
+
+def test_the_token_pepper_is_loaded_as_a_secret() -> None:
+    pepper = load_token_pepper({"AEGIS_TOKEN_PEPPER": "p" * 32})
+
+    assert pepper.reveal() == "p" * 32
+    assert "p" * 32 not in repr(pepper)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [(None, "is required"), (PLACEHOLDER, "placeholder"), ("p" * 31, "at least 32 characters")],
+)
+def test_weak_token_peppers_are_refused(value: str | None, message: str) -> None:
+    environ = {} if value is None else {"AEGIS_TOKEN_PEPPER": value}
+
+    with pytest.raises(SettingsError, match=message) as excinfo:
+        load_token_pepper(environ)
+
+    if value:
+        assert value not in str(excinfo.value)
