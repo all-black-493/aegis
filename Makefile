@@ -7,7 +7,7 @@ ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ENVTOOL = $(UV) run --project $(ROOT) --locked python -m aegis.config.envtool
 
 .PHONY: help setup env-file env-upgrade doctor up migrate api worker down test test-integration \
-	lint format typecheck check require-uv require-env
+	test-security lint format typecheck check require-uv require-env
 
 help: ## Show available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -45,8 +45,11 @@ down: require-env ## Stop services (the database volume is kept)
 test: require-uv ## Run unit tests (no Docker, database, models or credentials needed)
 	$(UV) run --locked pytest tests/unit
 
-test-integration: require-uv require-env ## Run integration tests (requires `make up`)
-	$(UV) run --locked --env-file .env pytest tests/integration
+test-integration: require-uv require-env ## Run integration and end-to-end tests (requires `make up`)
+	$(UV) run --locked --env-file .env pytest tests/integration tests/e2e
+
+test-security: require-uv require-env ## Run the security suite (requires `make up`)
+	$(UV) run --locked --env-file .env pytest tests/security
 
 lint: require-uv ## Check formatting and lint with Ruff
 	$(UV) run --locked ruff format --check .

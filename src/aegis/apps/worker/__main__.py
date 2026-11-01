@@ -12,11 +12,11 @@ from aegis.config.logs import Redactor, configure_logging
 from aegis.config.settings import (
     DatabaseRole,
     SettingsError,
+    forget_secrets,
     load_common_settings,
     load_database_settings,
     load_worker_settings,
 )
-from aegis.config.variables import SECRET_NAMES
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import schema_status
 from aegis.jobs.worker import Worker
@@ -40,9 +40,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    # Handlers run in this process; they get no credentials, including through the environment.
-    for name in SECRET_NAMES:
-        os.environ.pop(name, None)
+    forget_secrets(os.environ)
     secret = database.password.reveal()
     configure_logging(common, secrets=[secret])
     engine = create_database_engine(database, application_name="aegis-worker")

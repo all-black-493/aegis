@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 from typing import Any
@@ -10,8 +11,10 @@ from aegis.config.settings import (
     MAX_WORKER_ATTEMPTS,
     SettingsError,
     WorkerSettings,
+    forget_secrets,
     load_worker_settings,
 )
+from aegis.config.variables import SECRET_NAMES
 from aegis.jobs.handlers import REGISTRY, HandlerContext, noop, wait
 from aegis.jobs.worker import BACKOFF_MAX_SECONDS, exponential_backoff
 from aegis.policy.rules import MAX_JOB_ATTEMPTS, TASK_KINDS
@@ -142,3 +145,16 @@ def test_the_worker_refuses_invalid_settings_before_connecting(
 
     assert main() == 1
     assert "AEGIS_WORKER_LEASE_SECONDS" in capsys.readouterr().err
+
+
+def test_the_worker_forgets_every_secret_before_running_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in SECRET_NAMES:
+        monkeypatch.setenv(name, "s" * 32)
+    monkeypatch.setenv("AEGIS_POSTGRES_DB", "kept")
+
+    forget_secrets(os.environ)
+
+    assert not SECRET_NAMES & os.environ.keys()
+    assert os.environ["AEGIS_POSTGRES_DB"] == "kept"

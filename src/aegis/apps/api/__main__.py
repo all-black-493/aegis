@@ -11,6 +11,7 @@ from aegis.config.settings import (
     API_HOST,
     DatabaseRole,
     SettingsError,
+    forget_secrets,
     load_api_settings,
     load_common_settings,
     load_database_settings,
@@ -29,6 +30,7 @@ def main() -> int:
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+    forget_secrets(os.environ)
     secrets = [database.password.reveal(), pepper.reveal()]
     configure_logging(common, secrets=secrets)
     engine = create_database_engine(database, application_name="aegis-api")

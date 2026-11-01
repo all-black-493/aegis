@@ -1,9 +1,9 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
 from aegis.config.envfile import PLACEHOLDER
-from aegis.config.variables import BY_NAME, PREFIX
+from aegis.config.variables import BY_NAME, PREFIX, SECRET_NAMES
 
 OWNER_ROLE = "aegis_owner"
 APP_ROLE = "aegis_app"
@@ -163,6 +163,13 @@ def load_token_pepper(environ: Mapping[str, str]) -> Secret:
     if problems:
         raise SettingsError(problems)
     return Secret(pepper)
+
+
+def forget_secrets(environ: MutableMapping[str, str]) -> None:
+    # Entry points call this once their settings are loaded, so later lookups and child processes
+    # find no credential. /proc/self/environ still holds the process's initial environment.
+    for name in SECRET_NAMES:
+        environ.pop(name, None)
 
 
 def unknown_variables(environ: Mapping[str, str]) -> list[str]:

@@ -254,6 +254,13 @@ def test_missing_env_file_fails_and_blocks_postgres_checks(system: FakeSystem, r
         ({"AEGIS_TYPO": "1"}, "AEGIS_TYPO is not a known AEGIS variable"),
         ({"AEGIS_TOKEN_PEPPER": None}, "missing or empty: AEGIS_TOKEN_PEPPER"),
         ({"AEGIS_TOKEN_PEPPER": "pepper-0123456789abcdef"}, "at least 32 characters"),
+        ({"AEGIS_API_PORT": "80"}, "AEGIS_API_PORT must be an integer"),
+        ({"AEGIS_WORKER_LEASE_SECONDS": "5"}, "AEGIS_WORKER_LEASE_SECONDS must be an integer"),
+        ({"AEGIS_WORKER_MAX_ATTEMPTS": "11"}, "AEGIS_WORKER_MAX_ATTEMPTS must be an integer"),
+        (
+            {"AEGIS_WORKER_LEASE_SECONDS": "30", "AEGIS_WORKER_HEARTBEAT_SECONDS": "20"},
+            "at most a third of the lease",
+        ),
     ],
 )
 def test_invalid_env_configuration_fails(
