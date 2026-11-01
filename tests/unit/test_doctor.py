@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from aegis.config.variables import TEMPLATE_NAMES
+from aegis.db.migrate import head_revision
 from aegis.doctor.__main__ import main
 from aegis.doctor.checks import GIB, run_checks
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
@@ -50,7 +51,7 @@ def _default_commands() -> dict[tuple[str, ...], CommandResult]:
         ),
         COMPOSE_VERSION: _ok("2.38.2\n"),
         COMPOSE_PS: _ps(),
-        SCHEMA_VERSION: _ok("0001\n"),
+        SCHEMA_VERSION: _ok(f"{head_revision()}\n"),
     }
 
 
@@ -371,7 +372,7 @@ def test_postgres_not_accepting_connections_fails(system: FakeSystem, root: Path
         (CommandResult(1, "", 'ERROR:  schema "aegis" does not exist'), "run `make migrate`"),
         (CommandResult(1, "", 'ERROR:  relation "x" does not exist'), "run `make migrate`"),
         (_ok(""), "not applied"),
-        (_ok("0000\n"), "at revision 0000, latest is 0001"),
+        (_ok("0000\n"), f"at revision 0000, latest is {head_revision()}"),
         (CommandResult(2, "", "psql: error: connection refused"), "could not read"),
     ],
 )

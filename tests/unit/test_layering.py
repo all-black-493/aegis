@@ -7,6 +7,13 @@ import pytest
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 SECURITY_PACKAGES = ("aegis.authorization", "aegis.policy")
+AUDIT_INDEPENDENT_OF = (
+    "aegis.identity",
+    "aegis.authorization",
+    "aegis.policy",
+    "aegis.tasks",
+    "aegis.jobs",
+)
 ENVIRONMENT_ACCESS = frozenset({"environ", "environb", "getenv", "putenv", "unsetenv"})
 
 
@@ -22,6 +29,10 @@ RULES = (
     *(
         Rule(package, "aegis.config", "configuration must not influence security decisions")
         for package in SECURITY_PACKAGES
+    ),
+    *(
+        Rule("aegis.audit", package, "audit depends only on configuration and the database")
+        for package in AUDIT_INDEPENDENT_OF
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
     Rule(
@@ -128,6 +139,8 @@ def test_source_tree_respects_the_layering_rules() -> None:
         ("aegis/tasks/service.py", "import aegis.apps.api\n", "entry points are leaves"),
         ("aegis/tasks/service.py", "from aegis.doctor import checks\n", "only entry points"),
         ("aegis/config/settings.py", "from aegis.audit import recorder\n", "bottom layer"),
+        ("aegis/audit/recorder.py", "from aegis.identity import service\n", "audit depends only"),
+        ("aegis/audit/recorder.py", "from ..tasks.service import x\n", "audit depends only"),
     ],
 )
 def test_forbidden_dependencies_are_detected(

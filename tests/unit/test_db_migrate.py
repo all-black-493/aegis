@@ -3,8 +3,8 @@ from alembic.script import ScriptDirectory
 from aegis.db.migrate import SchemaStatus, alembic_config, head_revision
 
 
-def test_latest_revision_is_the_baseline() -> None:
-    assert head_revision() == "0001"
+def test_latest_revision_is_the_audit_store() -> None:
+    assert head_revision() == "0002"
 
 
 def test_migration_history_is_linear_and_reversible() -> None:

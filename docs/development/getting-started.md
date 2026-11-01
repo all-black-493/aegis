@@ -3,11 +3,12 @@
 AEGIS has completed **Phase 0** and is building **Phase 1**. The repository provides:
 
 - a PostgreSQL service with least-privilege database roles and migrations;
+- an append-only audit store;
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling.
 
-There is no API, worker, agent execution, model provider, OpenShell integration, audit store, or other security control yet. Nothing executes untrusted workloads.
+There is no API, worker, agent execution, model provider, OpenShell integration, or other security control yet, and nothing emits audit events yet. Nothing executes untrusted workloads.
 
 ## Supported platform
 
@@ -110,6 +111,17 @@ All AEGIS objects live in the `aegis` schema of the `AEGIS_POSTGRES_DB` database
 
 The doctor and the readiness helper compare the database's revision with the latest migration in the package.
 
+### Audit events
+
+Security-relevant events are stored in `aegis.audit_events`:
+
+- `aegis_app` can only insert. It cannot read, change, delete or truncate events, and cannot choose an event's sequence number or timestamp.
+- Triggers reject changes and deletions from every role, including `aegis_owner`, and stamp each event with the database's transaction time.
+- `AuditRecorder` writes an event only inside the caller's transaction, so the event and the change it describes commit or roll back together.
+- Detail fields are limited to an allowlist per event type, and secrets are redacted before storage.
+
+The audit table is **not** tamper-proof against the owner or the superuser. See ADR-0010 for exactly what is and isn't guaranteed.
+
 ## The doctor
 
 `make doctor` prints one line per check. Each check is **required** or **optional**, with a status of `PASS`, `WARN`, `FAIL` or `SKIP`.
@@ -133,7 +145,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - inspect the resolved Compose configuration;
   - exercise the real `make setup` and `make env-upgrade` targets;
   - verify `.gitignore`;
-  - recreate, bootstrap and migrate a separate `<AEGIS_POSTGRES_DB>_test` database, then verify role privileges, migrations and the CLI against it.
+  - recreate, bootstrap and migrate a separate `<AEGIS_POSTGRES_DB>_test` database, then verify role privileges, migrations and the CLI against it;
+  - verify the audit table's privileges, triggers and constraints, transactional recording and redaction.
 
   They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 
