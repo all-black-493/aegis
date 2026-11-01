@@ -44,5 +44,5 @@ D8 (job attempts and fencing) arrives with the jobs table in Increment 10.
 - C5 (the expected actor) and C7 (the current policy) are checked only in Python: the database cannot know who should be acting or which policy is running.
 - D5 compares transaction start times, so a decision from another transaction that started in the same microsecond would pass. Reaching that requires `aegis_app` credentials, which already allow fabrication.
 - Single use is enforced by the database alone; `apply_transition()` relies on the unique `decision_id`.
-- Callers pass the running policy's version and fingerprint (`PolicyRef`), which `DecisionService.policy` provides (ADR-0007). The task API arrives in Increment 9.
+- Callers pass the running policy's version and fingerprint (`PolicyRef`), which `DecisionService.policy` provides (ADR-0007). The task service applies every API-driven transition this way (ADR-0011).
 - The owner and superuser can disable the triggers (ADR-0010, N3).

@@ -35,6 +35,10 @@ PRODUCTION_ROUTES = {
     ("GET", "/health/live"),
     ("GET", "/health/ready"),
     ("GET", "/v1/me"),
+    ("POST", "/v1/tasks"),
+    ("GET", "/v1/tasks"),
+    ("GET", "/v1/tasks/{task_id}"),
+    ("POST", "/v1/tasks/{task_id}/cancel"),
 }
 
 
@@ -92,7 +96,7 @@ def _routes(*routers: APIRouter) -> set[tuple[str, str]]:
     }
 
 
-def test_the_api_exposes_only_health_and_me() -> None:
+def test_the_api_exposes_only_health_me_and_tasks() -> None:
     assert _routes(health, v1) == PRODUCTION_ROUTES
 
 

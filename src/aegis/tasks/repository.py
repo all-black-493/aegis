@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Connection, RowMapping, func, insert, select, update
+from sqlalchemy import Connection, RowMapping, func, insert, select, tuple_, update
 
 from aegis.authorization.contract import DecisionMismatchError, SecurityDecision
 from aegis.tasks.schema import security_decisions, task_state_transitions, tasks
@@ -57,6 +57,12 @@ class TransitionRow:
     request_id: str | None
 
 
+@dataclass(frozen=True)
+class Position:
+    created_at: datetime
+    task_id: UUID
+
+
 def transaction_time(connection: Connection) -> datetime:
     now: datetime = connection.execute(select(func.now())).scalar_one()
     return now
@@ -83,6 +89,34 @@ def insert_task(connection: Connection, new: NewTask) -> TaskRecord:
 def get_task(connection: Connection, task_id: UUID) -> TaskRecord | None:
     row = connection.execute(select(tasks).where(tasks.c.id == task_id)).mappings().first()
     return None if row is None else _record(row)
+
+
+def find_by_idempotency_key(
+    connection: Connection, initiator_id: UUID, idempotency_key: str
+) -> TaskRecord | None:
+    row = (
+        connection.execute(
+            select(tasks).where(
+                tasks.c.initiator_id == initiator_id, tasks.c.idempotency_key == idempotency_key
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return None if row is None else _record(row)
+
+
+def list_tasks(
+    connection: Connection, *, owner_id: UUID | None, limit: int, after: Position | None
+) -> list[TaskRecord]:
+    query = select(tasks).order_by(tasks.c.created_at.desc(), tasks.c.id.desc()).limit(limit)
+    if owner_id is not None:
+        query = query.where(tasks.c.owner_id == owner_id)
+    if after is not None:
+        query = query.where(
+            tuple_(tasks.c.created_at, tasks.c.id) < tuple_(after.created_at, after.task_id)
+        )
+    return [_record(row) for row in connection.execute(query).mappings()]
 
 
 def lock_task(connection: Connection, task_id: UUID) -> TaskRecord | None:
@@ -176,6 +210,27 @@ def update_state(
                 tasks.c.version == task.version,
             )
             .values(values)
+            .returning(tasks)
+        )
+        .mappings()
+        .first()
+    )
+    return None if row is None else _record(row)
+
+
+def request_cancellation(
+    connection: Connection, task: TaskRecord, requested_by: UUID
+) -> TaskRecord | None:
+    row = (
+        connection.execute(
+            update(tasks)
+            .where(
+                tasks.c.id == task.task_id,
+                tasks.c.state == task.state.value,
+                tasks.c.version == task.version,
+                tasks.c.cancel_requested_by.is_(None),
+            )
+            .values(cancel_requested_by=requested_by)
             .returning(tasks)
         )
         .mappings()
