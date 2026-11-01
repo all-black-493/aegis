@@ -141,6 +141,8 @@ Use deterministic application logic and independently enforced controls for secu
 
 Never rely exclusively on an LLM-as-judge to establish that an action is safe or a task is complete.
 
+Evaluation frameworks such as DeepEval and DeepTeam are research instruments. Their scores and verdicts never authorize an action, never establish a security outcome on their own, and never run inside the enforcement path (ADR-0012).
+
 ### 3.5 Fail-Closed Behavior
 
 Security-critical failures must not silently permit execution.
@@ -249,6 +251,7 @@ Responsible for:
 - Execution tracing.
 - Adversarial evaluation.
 - Benchmark reporting.
+- Model-based evaluation with DeepEval and adversarial attack generation with DeepTeam, outside the runtime path.
 
 #### Delivery and Operations Plane
 
@@ -414,6 +417,8 @@ Use the following technologies unless a justified architectural decision changes
 | Testing | Pytest |
 | CI/CD | GitHub Actions |
 | Supply-chain scanning | Trivy, Syft, and Cosign where appropriate |
+| Agent and LLM evaluation | DeepEval (evaluation only) |
+| Adversarial test generation | DeepTeam (evaluation only) |
 
 ### 6.1 Model Providers
 
@@ -455,6 +460,17 @@ Use OpenTelemetry for vendor-neutral:
 
 Do not duplicate security audit responsibilities in the observability system.
 
+### 6.4 Evaluation Frameworks
+
+DeepEval (quality metrics for agent and model runs) and DeepTeam (adversarial attack generation) evaluate AEGIS; they are not part of it (ADR-0012).
+
+- They belong to the evaluation project under `benchmarks/`, which has its own `pyproject.toml` and lockfile. They are never runtime or core development dependencies, and `src/aegis` never imports them.
+- The evaluation harness drives AEGIS only through its public interfaces and read-only access to its records.
+- DeepEval arrives in Phase 4 and DeepTeam in Phase 10.
+- Judges and attack simulators use local models only, pinned by digest, and never the model under test. Telemetry and uploads to Confident AI stay disabled.
+- Security outcomes are decided by deterministic assertions over AEGIS's audit and enforcement records. Framework verdicts are reported as secondary signals, with their measured agreement.
+- Adversarial runs target only disposable deployments with synthetic secrets, under verified OpenShell. Without OpenShell they do not run.
+
 ---
 
 ## 7. Repository Structure
@@ -463,7 +479,9 @@ Use the following structure as the target architecture.
 
 Do not create empty packages merely to match this tree.
 
-All Python code lives in the single installable `aegis` distribution under `src/aegis/`. Components sit directly under `src/aegis/`; there is no `packages/` grouping level. Entry points live in `src/aegis/apps/`. Import rules between components are recorded in ADR-0002 and enforced by `tests/unit/test_layering.py`.
+All application code lives in the single installable `aegis` distribution under `src/aegis/`. Components sit directly under `src/aegis/`; there is no `packages/` grouping level. Entry points live in `src/aegis/apps/`. Import rules between components are recorded in ADR-0002 and enforced by `tests/unit/test_layering.py`, which also forbids importing the evaluation frameworks.
+
+The only other Python project is the evaluation harness under `benchmarks/`: a separate, non-packaged uv project with its own lockfile for the evaluation frameworks (ADR-0012). It arrives in Phase 4.
 
 ```text
 AEGIS/
@@ -685,6 +703,8 @@ Use deterministic mock model behavior in standard CI.
 
 Do not require paid model credentials for ordinary pull requests.
 
+Model-based evaluation suites (DeepEval, DeepTeam) run separately from the required checks, with local judges. A model's verdict never gates an ordinary pull request.
+
 ---
 
 ## 10. Infrastructure and Local Development
@@ -750,13 +770,13 @@ The project should progress through these phases.
 | 1 | API, worker, database, configuration |
 | 2 | Model provider abstraction |
 | 3 | OpenShell integration and enforcement verification |
-| 4 | Single-agent execution |
+| 4 | Single-agent execution; evaluation harness with DeepEval |
 | 5 | Provenance and security audit |
 | 6 | Risk engine, policies, and approvals |
 | 7 | Evidence verification |
 | 8 | OpenTelemetry and Langfuse |
 | 9 | Multi-agent orchestration |
-| 10 | Adversarial benchmark |
+| 10 | Adversarial benchmark with DeepTeam |
 | 11 | CI/CD and supply-chain security |
 | 12 | Research evaluation and release |
 
@@ -803,6 +823,8 @@ Use:
 - Repeated trials where model nondeterminism matters.
 - Confidence intervals where appropriate.
 - Deterministic security assertions.
+- Calibrated model-based judges: human-labelled calibration sets, reported agreement and error rates, and judges independent of the model under test.
+- Recorded evaluation framework, judge model and metric threshold versions.
 
 Do not fabricate benchmark results or claim improvements without experimental evidence.
 
@@ -824,6 +846,7 @@ Document limitations and possible sources of bias.
 - Avoid circular imports.
 - Avoid global mutable state.
 - Keep business logic testable.
+- Keep evaluation frameworks (DeepEval, DeepTeam) out of the runtime and core development dependencies; they belong to the evaluation project (ADR-0012).
 
 Do not add a dependency solely because it is popular.
 

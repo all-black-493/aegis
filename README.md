@@ -528,6 +528,15 @@ These systems have different responsibilities:
 
 Langfuse traces must not be treated as immutable security audit records.
 
+### DeepEval and DeepTeam
+
+DeepEval measures the quality of agent runs (task completion, tool use, answer quality), and DeepTeam generates adversarial attacks. Both are evaluation instruments that run outside AEGIS, in a separate environment, against disposable deployments. Neither is part of the application or its enforcement path ([ADR-0012](docs/architecture/decisions/0012-evaluation-frameworks.md)).
+
+- Langfuse and OpenTelemetry remain the systems of record for traces and telemetry. DeepEval's own tracing and its uploads to Confident AI are not used.
+- Benchmark datasets are versioned files in the repository. Langfuse may display them but is not their system of record.
+- Evaluation results are research records stored with each benchmark run. They are never security evidence and never authorize anything.
+- Security outcomes come from deterministic assertions over AEGIS's audit and enforcement records. Model-based verdicts are reported beside them, with their measured agreement.
+
 Security-critical events must be persisted through a dedicated audit mechanism with appropriate integrity, retention, and access controls.
 
 ### Operational metrics
@@ -624,6 +633,8 @@ The following is the proposed stack. Specific versions must be pinned and valida
 | Initial model | Qwen3.5 | Local agent reasoning and tool-use experiments |
 | Observability | Langfuse | LLM traces and evaluation |
 | Telemetry | OpenTelemetry | Vendor-neutral observability |
+| Agent and LLM evaluation | DeepEval | Quality metrics for agent runs; evaluation only, in a separate environment |
+| Adversarial testing | DeepTeam | Attack generation for the adversarial benchmark; evaluation only |
 | API | Python API framework | Application interface |
 | Database | PostgreSQL | Application state, tasks and audit metadata |
 | Queue | Database-backed worker initially | Asynchronous execution |
@@ -643,6 +654,7 @@ The following is the proposed stack. Specific versions must be pinned and valida
 - Do not introduce a vector database until retrieval requirements justify it.
 - Keep model-provider integrations behind an abstraction.
 - Keep OpenShell, Ollama, and Langfuse adapters separate from core business logic.
+- Keep evaluation frameworks (DeepEval, DeepTeam) outside the application: a separate environment, never on the enforcement path.
 
 ---
 
@@ -825,7 +837,7 @@ The implemented commands, prerequisites and configuration are documented in [doc
 
 # 10. Repository Structure
 
-All Python code lives in a single installable `aegis` distribution under `src/aegis/` ([ADR-0001](docs/architecture/decisions/0001-phase-0-development-foundation.md)). Components sit directly under `src/aegis/`, with entry points in `src/aegis/apps/`; there is no `packages/` grouping level ([ADR-0002](docs/architecture/decisions/0002-layering-configuration-and-logging.md)).
+All application code lives in a single installable `aegis` distribution under `src/aegis/` ([ADR-0001](docs/architecture/decisions/0001-phase-0-development-foundation.md)). Components sit directly under `src/aegis/`, with entry points in `src/aegis/apps/`; there is no `packages/` grouping level ([ADR-0002](docs/architecture/decisions/0002-layering-configuration-and-logging.md)).
 
 ## Current structure
 
@@ -926,6 +938,8 @@ AEGIS/
 
 `CONTRIBUTING.md`, `SECURITY.md` and `LICENSE` wait on pending decisions; no license has been chosen.
 
+`benchmarks/` will be a separate, non-packaged uv project with its own lockfile, holding the evaluation harness and the DeepEval and DeepTeam dependencies ([ADR-0012](docs/architecture/decisions/0012-evaluation-frameworks.md)). It arrives in Phase 4.
+
 Optional services are added to the existing `docker-compose.yml` under Compose profiles, not in separate Compose files.
 
 The structure may evolve as implementation reveals better boundaries.
@@ -1016,10 +1030,13 @@ Implement:
 - Execution tracking.
 - Failure handling.
 - Resource limits.
+- Evaluation harness in `benchmarks/` (a separate environment) with DeepEval task-completion and tool-use metrics, a local judge model, and deterministic outcome assertions.
 
 **Acceptance criteria:**
 
 One agent completes a controlled task and produces structured execution records.
+
+The evaluation harness scores single-agent runs from AEGIS's own records, with DeepEval's telemetry and uploads disabled, and without DeepEval in the application's dependencies.
 
 Until the audit (Phase 5) and approval (Phase 6) controls are available, execution is restricted to explicitly permitted low-risk operations. This restriction must not be relaxed to preserve the phase order.
 
@@ -1068,6 +1085,8 @@ Implement:
 
 A task cannot be marked verified without the required evidence.
 
+DeepEval may grade the quality of an agent's explanation; evidence verification itself stays deterministic.
+
 ## Phase 8 — Observability
 
 Implement:
@@ -1078,6 +1097,7 @@ Implement:
 - Prompt version tracking.
 - Evaluation datasets.
 - Optional observability deployment.
+- Links from evaluation runs to traces by identifier; DeepEval's own tracing and cloud uploads stay disabled.
 
 **Acceptance criteria:**
 
@@ -1098,6 +1118,8 @@ Introduce:
 
 Each agent must have explicit permissions and responsibilities.
 
+Multi-agent evaluation (delegation, plan adherence) uses DeepEval, computed from AEGIS's execution records.
+
 **Acceptance criteria:**
 
 Agents collaborate successfully without inheriting unrestricted permissions from one another.
@@ -1112,10 +1134,13 @@ Implement:
 - Result schemas.
 - Baseline measurements.
 - Repeatable evaluation.
+- DeepTeam attack generation, mapped to the OWASP Top 10 for LLMs, the OWASP Top 10 for Agentic Applications and the categories in §15.
 
 **Acceptance criteria:**
 
 The same benchmark can be executed against multiple configurations and produces comparable results.
+
+Adversarial runs target only disposable deployments with synthetic secrets, under verified OpenShell. Security results come from deterministic assertions; DeepTeam's verdicts are reported beside them, with their agreement rate.
 
 ## Phase 11 — CI/CD and Supply-Chain Security
 
@@ -1124,7 +1149,7 @@ Implement:
 - Quality gates.
 - Security scans.
 - OpenShell integration tests.
-- Model evaluation workflows.
+- Model evaluation workflows: a scheduled, non-blocking workflow for DeepEval and DeepTeam suites with local judges. Deterministic suites remain the required checks, and the evaluation lockfile is scanned and included in the SBOM.
 - SBOM generation.
 - Artifact scanning.
 - Release automation.
@@ -1138,6 +1163,7 @@ Every release has documented build, test, security, and artifact verification re
 Implement:
 
 - Reproducible experiment configurations.
+- Calibrated judges, repeated trials and confidence intervals, with evaluation framework and judge model versions recorded.
 - Benchmark documentation.
 - Results analysis.
 - Limitations.
@@ -1394,6 +1420,8 @@ Use:
 
 A model evaluator must not be the sole authority for deciding whether a security test passed.
 
+DeepEval and DeepTeam suites run in a separate, scheduled workflow from the evaluation project's own environment, with local judge models. They never gate ordinary pull requests, and they never send data to Confident AI.
+
 ---
 
 # 15. Adversarial Benchmark
@@ -1444,8 +1472,11 @@ Each execution should record:
 - Evidence references.
 - Execution duration.
 - Resource consumption.
+- Evaluation framework versions, and the judge model and digest where model-based metrics are used.
 
 Results must be versioned and reproducible.
+
+The security result is decided by deterministic assertions over AEGIS's records. When DeepTeam judges the same case, its verdict is recorded beside the deterministic result.
 
 ---
 
@@ -1481,6 +1512,7 @@ For meaningful comparisons:
 7. Calculate appropriate confidence intervals.
 8. Report failures and limitations.
 9. Publish benchmark configuration and results.
+10. Calibrate model-based judges against human-labelled sets, use a judge that is not the model under test, and report its agreement and error rates.
 
 The research objective is not to maximize the number of blocked actions.
 
