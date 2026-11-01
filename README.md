@@ -842,6 +842,7 @@ AEGIS/
 │   └── aegis/
 │       ├── apps/
 │       │   └── cli/
+│       ├── audit/
 │       ├── config/
 │       ├── db/
 │       └── doctor/
@@ -859,7 +860,7 @@ AEGIS/
 └── uv.lock
 ```
 
-`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations, and `src/aegis/apps/cli/` the `aegis` command (`aegis db bootstrap`, `aegis db migrate`). `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
+`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations; `src/aegis/audit/` the append-only audit store ([ADR-0010](docs/architecture/decisions/0010-audit-store.md)); and `src/aegis/apps/cli/` the `aegis` command (`aegis db bootstrap`, `aegis db migrate`). `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
 
 ## Planned additions
 
@@ -874,7 +875,6 @@ AEGIS/
 │       │   ├── worker/
 │       │   └── dashboard/
 │       │
-│       ├── audit/
 │       ├── identity/
 │       ├── authorization/
 │       ├── policy/
