@@ -62,7 +62,7 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 | `identity.disabled`, `identity.enabled` | none | Increment 5 |
 | `role.granted`, `role.revoked` | `role` | Increment 5 |
 | `authz.denied` | `action` | Increments 8–9 |
-| `security.decision` | `action`, `effect`, `stage` | Increment 8 |
+| `security.decision` | `action`, `effect`, `stage` | Increment 8 (`DecisionService.record`) |
 | `task.created` | `kind` | Increment 9 |
 | `task.transitioned` | `from_state`, `to_state` | Increments 7–10 |
 | `task.cancel_requested` | none | Increment 9 |

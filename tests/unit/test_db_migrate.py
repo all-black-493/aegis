@@ -4,7 +4,7 @@ from aegis.db.migrate import SchemaStatus, alembic_config, head_revision
 
 
 def test_latest_revision_is_the_audit_store() -> None:
-    assert head_revision() == "0004"
+    assert head_revision() == "0005"
 
 
 def test_migration_history_is_linear_and_reversible() -> None:

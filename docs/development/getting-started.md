@@ -7,7 +7,8 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 - identities, role assignments and API credentials, administered through the `aegis` CLI;
 - an HTTP API on `127.0.0.1` with health checks and `GET /v1/me`, the only route that requires a token so far;
 - the authorization rules and the shared security-decision contract;
-- task, decision and history storage whose integrity rules the database enforces (no service or API creates tasks yet);
+- task, decision and history storage whose integrity rules the database enforces;
+- the versioned, fingerprinted policy and the decision service that saves every decision with its inputs (no service or API creates tasks yet);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling.
@@ -141,6 +142,8 @@ Tasks, the security decisions that justify their state changes, and their histor
 
 These rules prove internal consistency, not legitimacy. See ADR-0008.
 
+Decisions come from `DecisionService` (ADR-0007). It checks authorization first, then the policy rules for submission and execution, where any deny wins and anything unmatched or failing is denied. Each decision records the policy version and fingerprint and is saved with its inputs, so it can be replayed. The policy reads no configuration.
+
 ### Identities and credentials
 
 Identities, role assignments and API credentials are managed with the `aegis` CLI, which connects as `aegis_owner`. Run it through uv with the project's `.env`:
@@ -220,6 +223,7 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - verify the audit table's privileges, triggers and constraints, transactional recording and redaction;
   - verify the identity tables' privileges, triggers and constraints, token authentication, the administration rules and the `aegis` CLI, including that tokens and secrets never appear in storage or output;
   - verify the task integrity rules both through `apply_transition()` and through direct SQL as `aegis_app`, including concurrent transitions, and that the Python and SQL transition tables are identical;
+  - verify the decision service: saved decisions and their inputs, the quota, the execution rules E1–E4, evaluator errors saved as denials, approval never queuing a task, and replay;
   - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only.
 
   They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.

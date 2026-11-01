@@ -47,14 +47,14 @@ Authorization must be default-deny, independent of configuration and storage, an
 | C4 | Subject is the task's initiator | `require_consistent` | Composite foreign key to the task's initiator (ADR-0008) |
 | C5 | Actor is the expected actor; execution is by a system identity | `require_consistent` | Not enforceable without cross-table checks; tests only |
 | C6 | Resource is this task and its owner | `require_consistent` and decision invariants | `CHECK` constraints and a composite foreign key to the task's owner (ADR-0008) |
-| C7 | Current policy version and fingerprint | `require_consistent`, against the running policy (Increment 8) | Not enforceable: the database does not know the current policy |
+| C7 | Current policy version and fingerprint | `require_consistent`, against the running policy's `PolicyRef` (ADR-0007) | Not enforceable: the database does not know the current policy |
 | C8 | Decided in this transaction, used once | `require_consistent` compares `decided_at` with the transaction time | `decided_at = occurred_at` and a unique decision reference (ADR-0008) |
 | C9 | Required stage | `require_consistent` | `task_transition_rules`, checked by a trigger on history (ADR-0008) |
 
 ## Consequences and limitations
 
-- `apply_transition()` calls `require_consistent()` before every governed transition (ADR-0008). Nothing calls `authorize()` yet; the services, API and worker adopt it in Increments 8–10.
-- Authentication, not authorization, rejects disabled identities and revoked credentials (Increment 5). The checks the worker repeats about the initiator happen at the policy stage (Increment 8).
+- `apply_transition()` calls `require_consistent()` before every governed transition (ADR-0008). `DecisionService` calls `authorize()` as the first stage of every decision (ADR-0007); the API and worker adopt the service in Increments 9–10.
+- Authentication, not authorization, rejects disabled identities and revoked credentials (Increment 5). The checks the worker repeats about the initiator happen at the policy stage (ADR-0007).
 - C5 checks the actor's identity and kind, not its roles. Whether the worker holds `task:execute` is decided by `authorize()` when the decision is made.
 - Single use under C8 is enforced by the database alone (ADR-0008).
 - Per-task grants for agent identities are not modelled yet. `authorize()` already takes the resource, so they can be added without changing its signature (Phase 4).
