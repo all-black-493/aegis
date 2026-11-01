@@ -8,6 +8,8 @@ from aegis.config.variables import BY_NAME, PREFIX
 OWNER_ROLE = "aegis_owner"
 APP_ROLE = "aegis_app"
 DATABASE_HOST = "127.0.0.1"
+API_HOST = "127.0.0.1"
+DEFAULT_API_PORT = 8000
 MIN_SECRET_LENGTH = 16
 MIN_PEPPER_LENGTH = 32
 
@@ -65,6 +67,11 @@ class DatabaseSettings:
     password: Secret
 
 
+@dataclass(frozen=True)
+class ApiSettings:
+    port: int
+
+
 def load_database_settings(environ: Mapping[str, str], role: DatabaseRole) -> DatabaseSettings:
     problems = unknown_variables(environ)
     name = _required(environ, "AEGIS_POSTGRES_DB", problems)
@@ -93,6 +100,16 @@ def load_common_settings(environ: Mapping[str, str]) -> CommonSettings:
     if problems:
         raise SettingsError(problems)
     return CommonSettings(environment=environment, log_level=log_level)
+
+
+def load_api_settings(environ: Mapping[str, str]) -> ApiSettings:
+    problems = unknown_variables(environ)
+    port = DEFAULT_API_PORT
+    if environ.get("AEGIS_API_PORT", "").strip():
+        port = _port(environ, "AEGIS_API_PORT", problems)
+    if problems:
+        raise SettingsError(problems)
+    return ApiSettings(port)
 
 
 def load_token_pepper(environ: Mapping[str, str]) -> Secret:

@@ -56,6 +56,15 @@ def test_each_record_is_one_json_object(capture: tuple[logging.Logger, io.String
     assert str(entry["timestamp"]).endswith("+00:00")
 
 
+def test_terminal_colour_variants_are_dropped(capture: tuple[logging.Logger, io.StringIO]) -> None:
+    logger, stream = capture
+
+    logger.info("started", extra={"color_message": "\x1b[36mstarted\x1b[0m"})
+
+    [entry] = entries(stream)
+    assert "color_message" not in entry
+
+
 def test_newlines_cannot_forge_extra_log_lines(capture: tuple[logging.Logger, io.StringIO]) -> None:
     logger, stream = capture
 
