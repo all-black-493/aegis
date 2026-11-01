@@ -24,6 +24,7 @@ AUTHORIZATION_INDEPENDENT_OF = (
     "psycopg",
     "alembic",
 )
+EVALUATION_FRAMEWORKS = ("deepeval", "deepteam")
 ENVIRONMENT_ACCESS = frozenset({"environ", "environb", "getenv", "putenv", "unsetenv"})
 
 
@@ -47,6 +48,10 @@ RULES = (
     *(
         Rule("aegis.authorization", package, "authorization is pure: no storage or I/O")
         for package in AUTHORIZATION_INDEPENDENT_OF
+    ),
+    *(
+        Rule("aegis", framework, "evaluation frameworks stay outside the application (ADR-0012)")
+        for framework in EVALUATION_FRAMEWORKS
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
     Rule(
@@ -157,6 +162,9 @@ def test_source_tree_respects_the_layering_rules() -> None:
         ("aegis/audit/recorder.py", "from ..tasks.service import x\n", "audit depends only"),
         ("aegis/authorization/access.py", "import sqlalchemy\n", "authorization is pure"),
         ("aegis/authorization/access.py", "from aegis.db import engine\n", "authorization is pure"),
+        ("aegis/jobs/worker.py", "import deepeval\n", "outside the application"),
+        ("aegis/policy/rules.py", "from deepteam import red_team\n", "outside the application"),
+        ("aegis/apps/worker/__main__.py", "from deepeval.metrics import X\n", "outside the"),
     ],
 )
 def test_forbidden_dependencies_are_detected(
