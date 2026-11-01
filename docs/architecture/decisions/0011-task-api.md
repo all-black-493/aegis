@@ -1,0 +1,33 @@
+# ADR-0011: Task API
+
+- **Status:** Accepted
+- **Date:** 2026-11-01
+
+## Context
+
+The task API is the first part of AEGIS where callers change state. It must create, show, list and cancel tasks without letting one caller see or affect another's tasks, without creating duplicates when clients retry, and without any change being kept unless its decision and audit events are kept too.
+
+## Decisions
+
+| Area | Decision | Rationale |
+|---|---|---|
+| Routes | `POST /v1/tasks`, `GET /v1/tasks`, `GET /v1/tasks/{id}` and `POST /v1/tasks/{id}/cancel`, all on the authenticated `/v1` router (ADR-0004). | No route bypasses authentication. |
+| Task service | `aegis.tasks.service.TaskService` owns one transaction per operation. A submission writes the task, its decision, `task.created`, the `created` to `queued` or `awaiting_approval` history row and `task.transitioned` together. A cancellation writes its decision with the transition or cancellation request. A denial writes its decision. A privileged read writes `task.read_privileged` before the data is returned. Any failed write rolls back the whole operation, and the API returns 503. | The Phase 1 plan, §3.4, and G1 (ADR-0010): no change, denial or privileged read is kept or served without its record. |
+| Request body | `{"kind": ..., "input": {...}}`. Unknown keys, including `owner_id` and `initiator_id`, get 422. `kind` must look like a reason code. `input` must be a JSON object without NaN, infinities or NUL characters, which PostgreSQL cannot store, and without numbers that need an exponent (magnitude at least 1e16, or below 1e-4 and not zero). `jsonb` prints numbers in full, so `1e308` would grow to 309 digits; without exponents a saved input grows by at most half (`,` becomes `, `), and the 16 KiB of input a decision keeps stays within its 64 KiB limit. Whether the kind exists and the input fits it is left to the policy, so those refusals are saved decisions. | The structure is checked at the boundary, every refusal by a rule is recorded, and no input can make saving its refusal fail. |
+| Check order | Authentication (401), then the `Idempotency-Key` header (400), then the body (422), then the decision. The body is read in a dependency rather than as a FastAPI body parameter, because FastAPI parses body parameters before any dependency runs. | An unauthenticated caller learns nothing about the body rules, and closes the ADR-0004 limitation for this route. |
+| Idempotency | Exactly one `Idempotency-Key` header of 8–128 characters from `A-Z a-z 0-9 _ . : -`, or 400 (`idempotency_key_required` or `idempotency_key_invalid`). Each initiator has its own key space. The request fingerprint is the SHA-256 of canonical JSON (sorted keys, no spaces) of the method, path, kind and input. The same key with the same fingerprint returns the task's current state with 200 and `Idempotent-Replayed: true`, and makes no decision. The same key with another fingerprint returns 409 `idempotency_key_conflict` and nothing about the task. A denied submission creates no task, so its key stays unused. | The Phase 1 plan, §4.5. |
+| Concurrency | A submission takes the initiator's advisory lock before looking up the key, so concurrent requests with one key run one after the other: the first creates the task and the second replays or conflicts. The unique `(initiator_id, idempotency_key)` constraint stays as a backstop; if it fires, the request gets 503. | The plan expected the constraint to choose the winner. The lock gives the same outcome without a retry loop, and the same lock already guards the quota (ADR-0007). |
+| Replay rights | A replay is served only while the caller may still submit tasks. Otherwise the request is decided afresh, which denies and saves the denial. | A demoted identity cannot read through the replay path. |
+| Responses | A task is shown as `id`, `kind`, `state`, `version`, `owner_id`, `input`, `result`, `failure_code`, `cancel_requested_at` and timestamps. The idempotency key, fingerprint, submitting credential and canceller are never returned. Creation returns 201 with `Location`. A denial returns 403 problem `denied` with the decision's `reasons`. | Callers see why their own request was refused, and nothing more. |
+| Visibility | A task that does not exist, or that the caller may not read, gets the same 404. Reading another's task needs `task:read_any`, and cancelling it `task:cancel_any`. A caller who can see a task but may not cancel it gets 403. Lists show the caller's own tasks; `scope=all` needs `task:read_any`. | Callers cannot learn whether other users' tasks exist. |
+| Read decisions | `DecisionService` also decides `task.read`, `task.list` and `task.list_all` (authorization only). Denials are saved with a `security.decision` event; allowed reads are not saved. Reading another's task, and every `scope=all` listing, writes `task.read_privileged` with `scope` `task` or `all`. A denied read of a task names the task's initiator as subject; a denied listing names the caller. | The Phase 1 plan, §4.1: every denial is saved, and privileged reads are audited. |
+| Cancellation | The decision is `task.cancel` at the authorization stage and is always saved. `queued`, `awaiting_approval` and `interrupted` tasks move to `cancelled` (200). A `running` task gets its cancellation request set once, with `task.cancel_requested` (202); the worker finishes it (Increment 10). A finished task gets 409 `task_finished`. | The task lifecycle in the Phase 1 plan, §4.6. |
+| Pagination | Newest first, by `(created_at, id)`. `limit` is 1–100 (default 50). `next_cursor` is an opaque, unsigned base64url position; a malformed cursor gets 400 `invalid_cursor`. | A cursor only positions a query whose filter the server applies, so a forged cursor reveals nothing. |
+
+## Consequences and limitations
+
+- Authentication and the operation run in separate transactions. A disable, revocation or role change that commits between them applies from the next request; the worker re-checks the initiator when it claims the task (ADR-0007, E2–E4).
+- Cancelling a `queued` task does not yet touch its job; jobs arrive in Increment 10.
+- Listing filters on `owner_id` and sorts by `(created_at, id)` without a dedicated index. That is adequate for Phase 1 volumes and should be revisited with real load.
+- Saved read denials let an authenticated caller add rows by probing task IDs they already know. There is no rate limiting in Phase 1 (ADR-0004).
+- The time taken to answer 404 differs slightly between a missing task and a hidden one, because only the second saves a denial. Task IDs are random UUIDs, so this does not help find tasks.

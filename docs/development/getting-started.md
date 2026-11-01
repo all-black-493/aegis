@@ -5,15 +5,15 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
 - identities, role assignments and API credentials, administered through the `aegis` CLI;
-- an HTTP API on `127.0.0.1` with health checks and `GET /v1/me`, the only route that requires a token so far;
+- an HTTP API on `127.0.0.1` with health checks, `GET /v1/me`, and routes to submit, view, list and cancel tasks;
 - the authorization rules and the shared security-decision contract;
 - task, decision and history storage whose integrity rules the database enforces;
-- the versioned, fingerprinted policy and the decision service that saves every decision with its inputs (no service or API creates tasks yet);
+- the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling.
 
-There is no task API, worker, agent execution, model provider, OpenShell integration, or other security control yet. Only the CLI administration commands and failed API authentications emit audit events. Nothing executes untrusted workloads.
+There is no worker yet, so submitted tasks are queued but never run. There is no agent execution, model provider, OpenShell integration, or other security control yet. Nothing executes untrusted workloads.
 
 ## Supported platform
 
@@ -181,10 +181,17 @@ See ADR-0005 for the design and its limitations.
 | `GET /health/live` | none | `200 {"status": "alive"}` while the process runs |
 | `GET /health/ready` | none | `200 {"status": "ready"}` when the database answers and its schema is current; otherwise `503` |
 | `GET /v1/me` | bearer token | The caller's identity ID, name, kind, roles and credential ID |
+| `POST /v1/tasks` | bearer token and `Idempotency-Key` | Submits a task: `201` when created, `200` when the same request is repeated |
+| `GET /v1/tasks` | bearer token | The caller's tasks, newest first; `scope=all` lists everyone's (admins and auditors) |
+| `GET /v1/tasks/{id}` | bearer token | One task, if the caller may see it; otherwise `404` |
+| `POST /v1/tasks/{id}/cancel` | bearer token | Cancels a task (`200`), or asks a running one to stop (`202`) |
 
 ```bash
 TOKEN=$(uv run --locked --env-file .env aegis credential issue alice)
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/me
+curl -s -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: first-task-0001" \
+  -H "Content-Type: application/json" -d '{"kind": "wait", "input": {"seconds": 5}}' \
+  http://127.0.0.1:8000/v1/tasks
 ```
 
 - Every `/v1` route requires a token. Every authentication failure gets the same `401`, whatever the reason. Failures involving an existing credential (wrong secret, revoked, expired, disabled identity) are audited as `auth.failed`.
@@ -194,7 +201,15 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/me
 - Every response carries an `X-Request-ID`, which also appears in the logs and audit events.
 - `/docs` and `/openapi.json` exist only when `AEGIS_ENV=development`.
 
-See ADR-0004 for the design and its limitations.
+Tasks:
+
+- The only kinds are `noop` (input `{}`) and `wait` (input `{"seconds": n}`, 0 to 300). A `wait` over 30 seconds is created in `awaiting_approval`; approvals arrive in Phase 6. Each identity may have at most 10 unfinished tasks.
+- `Idempotency-Key` is required: 8 to 128 characters from `A-Z a-z 0-9 _ . : -`, unique per identity. Repeating a request with the same key and body returns the original task with `Idempotent-Replayed: true`; the same key with a different body gets `409`. A refused submission does not use up its key.
+- A refused request gets `403` with code `denied` and the policy's reason codes. Tasks the caller may not see get the same `404` as tasks that do not exist.
+- Every submission, cancellation and refusal is saved as a security decision with its audit events, in the same transaction as the change. Reading another identity's tasks is audited as `task.read_privileged`.
+- `GET /v1/tasks` takes `limit` (1 to 100, default 50) and the `next_cursor` from the previous page as `cursor`.
+
+See ADR-0004 and ADR-0011 for the design and its limitations.
 
 ## The doctor
 
@@ -224,7 +239,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - verify the identity tables' privileges, triggers and constraints, token authentication, the administration rules and the `aegis` CLI, including that tokens and secrets never appear in storage or output;
   - verify the task integrity rules both through `apply_transition()` and through direct SQL as `aegis_app`, including concurrent transitions, and that the Python and SQL transition tables are identical;
   - verify the decision service: saved decisions and their inputs, the quota, the execution rules E1–E4, evaluator errors saved as denials, approval never queuing a task, and replay;
-  - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only.
+  - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only;
+  - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event.
 
   They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 

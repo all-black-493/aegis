@@ -20,7 +20,7 @@ Authorization (ADR-0006) answers whether an identity may attempt an action. Some
 | Decision service | `DecisionService` gathers facts from the database as `aegis_app`, evaluates them, and builds a `SecurityDecision` stamped with the transaction time and the policy's version and fingerprint. `record()` saves the decision, its inputs and a `security.decision` audit event in the caller's transaction. Submission decisions take a per-initiator advisory lock before counting active tasks, so concurrent submissions cannot exceed the quota. | One place builds every decision, and it is saved with everything needed to check it again. |
 | Saved inputs | Every saved decision stores its inputs in `security_decisions.inputs` (migration 0005): the actor, the resource, and the submission or execution facts. Those include the task's kind and input, but an input over 16 KiB, or one that isn't a JSON object, is stored only as its size. The column must be a JSON object of at most 64 KiB. | Replay needs the exact facts. Inputs never contain credentials or tokens. |
 | Replay | `DecisionService.replay(decision_id)` re-runs the saved inputs through the current policy and returns the saved and replayed verdicts. It refuses a decision made under another version or fingerprint. | Saved decisions can be shown to follow from their inputs. |
-| What is saved | The service decides only state-changing actions (submit, execute, cancel). The caller saves every such decision, whatever its effect, including denials and evaluation errors. A denied submission is saved without a task. | The Phase 1 plan, §4.1. |
+| What is saved | The service decides state-changing actions (submit, execute, cancel), and the caller saves every such decision, whatever its effect, including denials and evaluation errors. A denied submission is saved without a task. It also decides reads and listings (`task.read`, `task.list`, `task.list_all`) at the authorization stage; only their denials are saved (ADR-0011). | The Phase 1 plan, §4.1: every decision about a change, and every denial, is saved. |
 
 ## Consequences and limitations
 
@@ -28,5 +28,5 @@ Authorization (ADR-0006) answers whether an identity may attempt an action. Some
 - The fingerprint changes with any byte of the two modules, including comments and formatting. That is deliberate: every edit needs a version bump.
 - Task inputs that are rejected are kept in the decision record, as accepted ones are in `tasks`. Phase 1 task kinds take no secrets, but a client could still put one in a rejected input.
 - Facts are read at the time of the decision. Role changes or revocations after an allow are seen at the next decision (for example, when the worker claims the task), not during a run (ADR-0009, Increment 10).
-- Nothing in the API uses the service yet. The task API arrives in Increment 9 and the worker in Increment 10.
+- The task API (ADR-0011) uses the service for every task route. The worker adopts it in Increment 10.
 - `authz.denied` events are not emitted yet: every denial here is a saved decision with a `security.decision` event.

@@ -49,6 +49,14 @@ class DecisionService:
     def policy(self) -> PolicyRef:
         return PolicyRef(self._policy.version, self._policy.digest)
 
+    def lock_submissions(self, connection: Connection, identity_id: UUID) -> None:
+        # Serialises one initiator's submissions, so concurrent requests cannot exceed the quota
+        # or reuse an idempotency key. The lock is re-entrant within a transaction.
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(:lock, hashtext(:identity))"),
+            {"lock": SUBMISSION_LOCK, "identity": str(identity_id)},
+        )
+
     def submission(
         self,
         connection: Connection,
@@ -58,11 +66,7 @@ class DecisionService:
         task_input: Any,
         request_id: str | None = None,
     ) -> Decided:
-        # Serialises one initiator's submissions, so concurrent requests cannot exceed the quota.
-        connection.execute(
-            text("SELECT pg_advisory_xact_lock(:lock, hashtext(:identity))"),
-            {"lock": SUBMISSION_LOCK, "identity": str(actor.identity_id)},
-        )
+        self.lock_submissions(connection, actor.identity_id)
         active = connection.execute(
             select(func.count())
             .select_from(tasks)
@@ -128,21 +132,40 @@ class DecisionService:
         task: TaskRecord,
         request_id: str | None = None,
     ) -> Decided:
+        return self._about_task(connection, Action.TASK_CANCEL, actor, task, request_id)
+
+    def read(
+        self,
+        connection: Connection,
+        actor: ActorContext,
+        task: TaskRecord,
+        request_id: str | None = None,
+    ) -> Decided:
+        return self._about_task(connection, Action.TASK_READ, actor, task, request_id)
+
+    def listing(
+        self,
+        connection: Connection,
+        actor: ActorContext,
+        *,
+        everyone: bool,
+        request_id: str | None = None,
+    ) -> Decided:
         inputs = DecisionInputs(
-            action=Action.TASK_CANCEL,
+            action=Action.TASK_LIST_ALL if everyone else Action.TASK_LIST,
             actor_id=actor.identity_id,
             actor_kind=actor.kind,
             actor_roles=actor.roles,
-            resource_id=str(task.task_id),
-            resource_owner_id=task.owner_id,
+            resource_id=None,
+            resource_owner_id=None,
         )
         decision = self._decision(
             connection,
             inputs,
             decide(self._policy, inputs),
             actor_credential_id=actor.credential_id,
-            subject_id=task.initiator_id,
-            task_id=task.task_id,
+            subject_id=actor.identity_id,
+            task_id=None,
             request_id=request_id,
         )
         return Decided(decision, inputs)
@@ -158,7 +181,7 @@ class DecisionService:
                 outcome=Outcome.DENIED if decision.effect is Effect.DENY else Outcome.SUCCESS,
                 actor_id=decision.actor_id,
                 actor_kind=ActorKind(decision.actor_kind.value),
-                target_type="task",
+                target_type=None if decision.resource_id is None else "task",
                 target_id=decision.resource_id,
                 task_id=decision.task_id,
                 job_id=decision.job_id,
@@ -189,6 +212,33 @@ class DecisionService:
             raise ReplayError(f"decision {decision_id} was made under another policy")
         saved = Verdict(Effect(row["effect"]), Stage(row["stage"]), tuple(row["reason_codes"]))
         return saved, decide(self._policy, from_document(row["inputs"]))
+
+    def _about_task(
+        self,
+        connection: Connection,
+        action: Action,
+        actor: ActorContext,
+        task: TaskRecord,
+        request_id: str | None,
+    ) -> Decided:
+        inputs = DecisionInputs(
+            action=action,
+            actor_id=actor.identity_id,
+            actor_kind=actor.kind,
+            actor_roles=actor.roles,
+            resource_id=str(task.task_id),
+            resource_owner_id=task.owner_id,
+        )
+        decision = self._decision(
+            connection,
+            inputs,
+            decide(self._policy, inputs),
+            actor_credential_id=actor.credential_id,
+            subject_id=task.initiator_id,
+            task_id=task.task_id,
+            request_id=request_id,
+        )
+        return Decided(decision, inputs)
 
     def _decision(
         self,
