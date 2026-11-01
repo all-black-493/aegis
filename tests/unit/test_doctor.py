@@ -102,6 +102,7 @@ def write_env(root: Path, **overrides: str | None) -> None:
         "AEGIS_POSTGRES_PORT": "5433",
         "AEGIS_DB_OWNER_PASSWORD": "owner-password-0123456789abcdef",
         "AEGIS_DB_APP_PASSWORD": "app-password-0123456789abcdef",
+        "AEGIS_TOKEN_PEPPER": "token-pepper-0123456789abcdef0123456789",
         **overrides,
     }
     path = root / ".env"
@@ -251,6 +252,8 @@ def test_missing_env_file_fails_and_blocks_postgres_checks(system: FakeSystem, r
         ({"AEGIS_ENV": "staging"}, "AEGIS_ENV must be one of"),
         ({"AEGIS_ENV": "production", "AEGIS_LOG_LEVEL": "DEBUG"}, "not allowed in production"),
         ({"AEGIS_TYPO": "1"}, "AEGIS_TYPO is not a known AEGIS variable"),
+        ({"AEGIS_TOKEN_PEPPER": None}, "missing or empty: AEGIS_TOKEN_PEPPER"),
+        ({"AEGIS_TOKEN_PEPPER": "pepper-0123456789abcdef"}, "at least 32 characters"),
     ],
 )
 def test_invalid_env_configuration_fails(

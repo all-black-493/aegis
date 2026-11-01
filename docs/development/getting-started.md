@@ -4,12 +4,13 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
+- identities, role assignments and API credentials, administered through the `aegis` CLI;
 - the authorization rules and the shared security-decision contract (pure code, not yet used by any process);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling.
 
-There is no API, worker, agent execution, model provider, OpenShell integration, or other security control yet, and nothing emits audit events yet. Nothing executes untrusted workloads.
+There is no API, worker, agent execution, model provider, OpenShell integration, or other security control yet. Tokens can be issued, but no process accepts them until the API arrives (Increment 6). Only the CLI administration commands emit audit events. Nothing executes untrusted workloads.
 
 ## Supported platform
 
@@ -78,6 +79,7 @@ Every target exits non-zero on failure.
 | `AEGIS_POSTGRES_PORT` | `5433` | Host port, published on `127.0.0.1` only |
 | `AEGIS_DB_OWNER_PASSWORD` | generated | Password of `aegis_owner`, which runs migrations and administration |
 | `AEGIS_DB_APP_PASSWORD` | generated | Password of `aegis_app`, which the API and worker will use |
+| `AEGIS_TOKEN_PEPPER` | generated | Server-side key for hashing API tokens; at least 32 characters. Changing it invalidates every issued token. |
 
 Generated secrets are 64 hex characters from a cryptographic random generator, unique per checkout.
 
@@ -98,7 +100,7 @@ All AEGIS objects live in the `aegis` schema of the `AEGIS_POSTGRES_DB` database
 | Role | Attributes | Used by |
 |---|---|---|
 | `AEGIS_POSTGRES_USER` (default `aegis`) | Superuser, created by the PostgreSQL image | `aegis db bootstrap` only |
-| `aegis_owner` | Login; not a superuser; cannot create roles or databases | Migrations (`aegis db migrate`) and, from Increment 5, administration |
+| `aegis_owner` | Login; not a superuser; cannot create roles or databases | Migrations (`aegis db migrate`) and identity administration (`aegis identity`, `aegis credential`, `aegis role`) |
 | `aegis_app` | Login; no ownership; only the privileges each migration grants | The API and worker, from later increments |
 
 `aegis db bootstrap` is safe to rerun. Each run:
@@ -123,6 +125,34 @@ Security-relevant events are stored in `aegis.audit_events`:
 
 The audit table is **not** tamper-proof against the owner or the superuser. See ADR-0010 for exactly what is and isn't guaranteed.
 
+### Identities and credentials
+
+Identities, role assignments and API credentials are managed with the `aegis` CLI, which connects as `aegis_owner`. Run it through uv with the project's `.env`:
+
+```bash
+uv run --locked --env-file .env aegis identity create alice --kind human --role admin
+uv run --locked --env-file .env aegis credential issue alice --days 30 --description laptop
+uv run --locked --env-file .env aegis role grant alice auditor
+uv run --locked --env-file .env aegis role revoke alice auditor
+uv run --locked --env-file .env aegis identity create ci-runner --kind service --role operator
+uv run --locked --env-file .env aegis credential issue ci-runner
+uv run --locked --env-file .env aegis credential list ci-runner
+uv run --locked --env-file .env aegis credential revoke <credential-id>
+uv run --locked --env-file .env aegis identity disable ci-runner
+uv run --locked --env-file .env aegis identity enable ci-runner
+```
+
+Every command also accepts `--database <name>` to target another database.
+
+- Identities are `human` or `service`. Names are 1–63 characters of `a-z`, `0-9`, `.`, `_`, `:` and `-`. Identities are never deleted; disable them instead.
+- Roles are `admin`, `operator` and `auditor` (ADR-0006). The `worker` role belongs only to the seeded `system:worker` identity. `system:worker` and `system:cli` cannot be changed or given credentials.
+- `credential issue` prints the token once, alone on stdout, and the credential ID and expiry on stderr. Only a peppered hash is stored, so a lost token cannot be recovered: revoke it and issue another.
+- Tokens expire after 30 days by default. `--days` accepts 1 to 90; there are no tokens without an expiry.
+- The last active admin cannot be disabled or lose the `admin` role.
+- Every command runs in one transaction with its audit events, recorded with actor `system:cli`. Commands refuse to run until `make migrate` has brought the schema up to date.
+
+See ADR-0005 for the design and its limitations.
+
 ## The doctor
 
 `make doctor` prints one line per check. Each check is **required** or **optional**, with a status of `PASS`, `WARN`, `FAIL` or `SKIP`.
@@ -131,7 +161,7 @@ The audit table is **not** tamper-proof against the owner or the superuser. See 
 - **Optional:** whether the doctor runs inside the project `.venv`, whether `.env` grants any permission to other users or groups, and whether `.env` defines every variable in `.env.example`.
 - **Not checked:** the model provider (Phase 2), NVIDIA OpenShell (Phase 3) and Langfuse/OpenTelemetry (Phase 8). These are listed separately and never reported as passing.
 
-The `.env` configuration check also validates `AEGIS_ENV` and `AEGIS_LOG_LEVEL`, requires every secret, and rejects unknown `AEGIS_*` names.
+The `.env` configuration check also validates `AEGIS_ENV` and `AEGIS_LOG_LEVEL`, requires every secret (the token pepper must be at least 32 characters), and rejects unknown `AEGIS_*` names.
 
 The doctor exits non-zero if any required check fails or could not run. Optional checks never change the exit code. Secrets are redacted from all output.
 
@@ -147,7 +177,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - exercise the real `make setup` and `make env-upgrade` targets;
   - verify `.gitignore`;
   - recreate, bootstrap and migrate a separate `<AEGIS_POSTGRES_DB>_test` database, then verify role privileges, migrations and the CLI against it;
-  - verify the audit table's privileges, triggers and constraints, transactional recording and redaction.
+  - verify the audit table's privileges, triggers and constraints, transactional recording and redaction;
+  - verify the identity tables' privileges, triggers and constraints, token authentication, the administration rules and the `aegis` CLI, including that tokens and secrets never appear in storage or output.
 
   They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 

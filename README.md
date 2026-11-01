@@ -789,7 +789,7 @@ AEGIS_LOG_LEVEL=INFO
 
 Real credentials must never be committed.
 
-The current `.env.example` contains only the variables that are read today (`AEGIS_ENV`, the PostgreSQL settings and the database role passwords); the other variables above remain proposals.
+The current `.env.example` contains only the variables that are read today (`AEGIS_ENV`, the PostgreSQL settings, the database role passwords and the API token pepper); the other variables above remain proposals.
 
 Agent-visible configuration must not contain raw infrastructure or model-provider secrets.
 
@@ -846,7 +846,8 @@ AEGIS/
 │       ├── authorization/
 │       ├── config/
 │       ├── db/
-│       └── doctor/
+│       ├── doctor/
+│       └── identity/
 ├── tests/
 │   ├── unit/
 │   └── integration/
@@ -861,7 +862,7 @@ AEGIS/
 └── uv.lock
 ```
 
-`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations; `src/aegis/audit/` the append-only audit store ([ADR-0010](docs/architecture/decisions/0010-audit-store.md)); `src/aegis/authorization/` the role and permission catalog, `authorize()` and the shared security-decision contract ([ADR-0006](docs/architecture/decisions/0006-authorization-and-decision-contract.md)); and `src/aegis/apps/cli/` the `aegis` command (`aegis db bootstrap`, `aegis db migrate`). `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
+`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations; `src/aegis/audit/` the append-only audit store ([ADR-0010](docs/architecture/decisions/0010-audit-store.md)); `src/aegis/authorization/` the role and permission catalog, `authorize()` and the shared security-decision contract ([ADR-0006](docs/architecture/decisions/0006-authorization-and-decision-contract.md)); `src/aegis/identity/` identities, role assignments, API tokens and their administration ([ADR-0005](docs/architecture/decisions/0005-identities-and-credentials.md)); and `src/aegis/apps/cli/` the `aegis` command (`aegis db`, `aegis identity`, `aegis credential`, `aegis role`). `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
 
 ## Planned additions
 
@@ -876,7 +877,6 @@ AEGIS/
 │       │   ├── worker/
 │       │   └── dashboard/
 │       │
-│       ├── identity/
 │       ├── policy/
 │       ├── tasks/
 │       ├── jobs/

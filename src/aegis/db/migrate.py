@@ -2,11 +2,8 @@ from dataclasses import dataclass
 
 from alembic import command
 from alembic.config import Config
-from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import Connection, Engine
-
-from aegis.db.metadata import SCHEMA
+from sqlalchemy import Connection, Engine, text
 
 SCRIPT_LOCATION = "aegis.db:migrations"
 
@@ -37,8 +34,12 @@ def head_revision() -> str:
 
 
 def schema_status(connection: Connection) -> SchemaStatus:
-    context = MigrationContext.configure(connection, opts={"version_table_schema": SCHEMA})
-    return SchemaStatus(current=context.get_current_revision(), head=head_revision())
+    current = None
+    if connection.execute(text("SELECT to_regclass('aegis.alembic_version')")).scalar():
+        current = connection.execute(
+            text("SELECT version_num FROM aegis.alembic_version")
+        ).scalar_one_or_none()
+    return SchemaStatus(current=current, head=head_revision())
 
 
 def upgrade(engine: Engine, revision: str = "head") -> None:

@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Column, Identity, Index, Table, Text, text
+from sqlalchemy import BigInteger, Column, ForeignKey, Identity, Index, Table, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 
 from aegis.db.metadata import metadata
@@ -12,7 +12,7 @@ audit_events = Table(
     Column("event_type", Text, nullable=False),
     Column("source", Text, nullable=False),
     Column("outcome", Text, nullable=False),
-    Column("actor_id", UUID(as_uuid=True)),
+    Column("actor_id", UUID(as_uuid=True), ForeignKey("aegis.identities.id")),
     Column("actor_kind", Text),
     Column("target_type", Text),
     Column("target_id", Text),

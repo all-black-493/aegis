@@ -34,6 +34,12 @@ VARIABLES = (
         secret=True,
         required=True,
     ),
+    Variable(
+        "AEGIS_TOKEN_PEPPER",
+        "server-side key for hashing API tokens (API, administration)",
+        secret=True,
+        required=True,
+    ),
 )
 
 BY_NAME = MappingProxyType({variable.name: variable for variable in VARIABLES})
