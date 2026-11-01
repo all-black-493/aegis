@@ -789,7 +789,7 @@ AEGIS_LOG_LEVEL=INFO
 
 Real credentials must never be committed.
 
-The current `.env.example` contains only the variables that are read today (`AEGIS_ENV` and the PostgreSQL settings); the other variables above remain proposals.
+The current `.env.example` contains only the variables that are read today (`AEGIS_ENV`, the PostgreSQL settings and the database role passwords); the other variables above remain proposals.
 
 Agent-visible configuration must not contain raw infrastructure or model-provider secrets.
 
@@ -840,7 +840,10 @@ AEGIS/
 │   └── development/
 ├── src/
 │   └── aegis/
+│       ├── apps/
+│       │   └── cli/
 │       ├── config/
+│       ├── db/
 │       └── doctor/
 ├── tests/
 │   ├── unit/
@@ -856,7 +859,7 @@ AEGIS/
 └── uv.lock
 ```
 
-`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
+`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations, and `src/aegis/apps/cli/` the `aegis` command (`aegis db bootstrap`, `aegis db migrate`). `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
 
 ## Planned additions
 
@@ -869,10 +872,8 @@ AEGIS/
 │       ├── apps/
 │       │   ├── api/
 │       │   ├── worker/
-│       │   ├── cli/
 │       │   └── dashboard/
 │       │
-│       ├── db/
 │       ├── audit/
 │       ├── identity/
 │       ├── authorization/
@@ -1328,7 +1329,7 @@ The pipeline should validate application correctness, runtime security, model be
 | `benchmark.yml` | Adversarial and agent evaluation | Nightly or manual |
 | `release.yml` | Build, SBOM, signing and release validation | Release tag |
 
-Only `ci.yml` is implemented so far. In Phase 0 it runs the static checks, the unit tests and the PostgreSQL integration tests, so database integration currently lives in `ci.yml` rather than a separate `integration.yml`. It has not yet run on GitHub, because no remote is configured. The other workflows are planned.
+Only `ci.yml` is implemented so far. It runs the static checks, the unit tests and the integration tests (PostgreSQL, migrations and the doctor) on every push to `main` and every pull request, so database integration currently lives in `ci.yml` rather than a separate `integration.yml`. The other workflows are planned.
 
 ## CI stages
 
@@ -1572,6 +1573,7 @@ make setup
 make env-upgrade
 make doctor
 make up
+make migrate
 make down
 make test
 make test-integration
@@ -1751,7 +1753,7 @@ Phase 0 is implemented: see [docs/development/getting-started.md](docs/developme
 | Architecture and threat model | Defined |
 | Progressive implementation plan | Defined |
 | Local-first development strategy | Defined |
-| Local development foundation (Phase 0) | Implemented; CI workflow not yet run on GitHub |
+| Local development foundation (Phase 0) | Implemented |
 | Ollama integration | Planned |
 | NVIDIA OpenShell integration | Planned |
 | Agent orchestration | Planned |

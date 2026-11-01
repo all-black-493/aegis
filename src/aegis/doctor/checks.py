@@ -6,12 +6,14 @@ from pathlib import Path
 from aegis.config.envfile import PLACEHOLDER, EnvFileError, parse_env_file
 from aegis.config.settings import SettingsError, load_common_settings
 from aegis.config.variables import REQUIRED_NAMES, SECRET_NAMES
+from aegis.db.migrate import head_revision
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
 from aegis.doctor.system import System
 
 REQUIRED_PYTHON = (3, 13)
 POSTGRES_HOST = "127.0.0.1"
 POSTGRES_SERVICE = "postgres"
+SCHEMA_VERSION_QUERY = "SELECT version_num FROM aegis.alembic_version"
 MIN_SECRET_LENGTH = 16
 GIB = 1024**3
 MIN_FREE_DISK_BYTES = 2 * GIB
@@ -57,6 +59,7 @@ def run_checks(system: System, root: Path) -> Diagnosis:
         if result.status is not PASS
     )
     postgres = _probe_postgres(system, root, docker, blockers)
+    service_result = check_postgres_service(system, port, postgres)
 
     results = (
         check_python(system),
@@ -70,7 +73,8 @@ def run_checks(system: System, root: Path) -> Diagnosis:
         check_disk(system, root, docker.root_dir),
         check_memory(system),
         check_postgres_port(system, port, postgres),
-        check_postgres_service(system, port, postgres),
+        service_result,
+        check_migrations(system, root, docker, env_values, service_result),
     )
     secrets = frozenset(
         value for key, value in (env_values or {}).items() if key in SECRET_NAMES and value
@@ -338,7 +342,7 @@ def _probe_postgres(
 def _env_problem(values: dict[str, str]) -> str | None:
     missing = [key for key in REQUIRED_NAMES if not values.get(key)]
     if missing:
-        return f"missing or empty: {', '.join(missing)}"
+        return f"missing or empty: {', '.join(missing)}; run `make env-upgrade`"
     for key in sorted(SECRET_NAMES & values.keys()):
         if values[key] == PLACEHOLDER:
             return f"{key} is still the placeholder; see getting-started troubleshooting"
@@ -379,6 +383,49 @@ def _json_object(text: str) -> dict[str, object]:
     except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def check_migrations(
+    system: System,
+    root: Path,
+    docker: _Docker,
+    env_values: dict[str, str] | None,
+    service: CheckResult,
+) -> CheckResult:
+    name = "Database migrations"
+    if service.status is not PASS or docker.executable is None or env_values is None:
+        return CheckResult(name, REQUIRED, SKIP, "blocked by: PostgreSQL service")
+    result = system.run(
+        [
+            docker.executable,
+            "compose",
+            "exec",
+            "-T",
+            POSTGRES_SERVICE,
+            "psql",
+            "-U",
+            env_values["AEGIS_POSTGRES_USER"],
+            "-d",
+            env_values["AEGIS_POSTGRES_DB"],
+            "-XAtq",
+            "-c",
+            SCHEMA_VERSION_QUERY,
+        ],
+        root,
+    )
+    head = head_revision()
+    if result.returncode != 0 and "does not exist" not in result.stderr:
+        return CheckResult(
+            name, REQUIRED, FAIL, f"could not read the schema version: {_first_line(result.stderr)}"
+        )
+    current = result.stdout.strip() if result.returncode == 0 else ""
+    if not current:
+        return CheckResult(name, REQUIRED, FAIL, "not applied; run `make migrate`")
+    if current != head:
+        return CheckResult(
+            name, REQUIRED, FAIL, f"at revision {current}, latest is {head}; run `make migrate`"
+        )
+    return CheckResult(name, REQUIRED, PASS, f"at latest revision {head}")
 
 
 def _first_line(text: str) -> str:

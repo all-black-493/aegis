@@ -22,6 +22,18 @@ VARIABLES = (
         "AEGIS_POSTGRES_PASSWORD", "PostgreSQL bootstrap password", secret=True, required=True
     ),
     Variable("AEGIS_POSTGRES_PORT", "PostgreSQL host port on 127.0.0.1", required=True),
+    Variable(
+        "AEGIS_DB_OWNER_PASSWORD",
+        "password of the aegis_owner role (migrations, administration)",
+        secret=True,
+        required=True,
+    ),
+    Variable(
+        "AEGIS_DB_APP_PASSWORD",
+        "password of the aegis_app role (API, worker)",
+        secret=True,
+        required=True,
+    ),
 )
 
 BY_NAME = MappingProxyType({variable.name: variable for variable in VARIABLES})

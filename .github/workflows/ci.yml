@@ -56,6 +56,7 @@ jobs:
           enable-cache: false
       - run: make setup
       - run: make up
+      - run: make migrate
       - run: make doctor
       - run: make test-integration
       - if: failure()
