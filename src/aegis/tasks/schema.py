@@ -70,6 +70,7 @@ security_decisions = Table(
     Column("request_id", Text),
     Column("job_id", UUID(as_uuid=True)),
     Column("job_attempt", Integer),
+    Column("inputs", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     UniqueConstraint(
         "id",
         "task_id",

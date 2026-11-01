@@ -98,7 +98,11 @@ def lock_task(connection: Connection, task_id: UUID) -> TaskRecord | None:
     return None if row is None else _record(row)
 
 
-def record_decision(connection: Connection, decision: SecurityDecision) -> None:
+def record_decision(
+    connection: Connection,
+    decision: SecurityDecision,
+    inputs: Mapping[str, Any] | None = None,
+) -> None:
     decided_at = connection.execute(
         insert(security_decisions)
         .values(
@@ -120,6 +124,7 @@ def record_decision(connection: Connection, decision: SecurityDecision) -> None:
             request_id=decision.request_id,
             job_id=decision.job_id,
             job_attempt=decision.job_attempt,
+            inputs=dict(inputs or {}),
         )
         .returning(security_decisions.c.decided_at)
     ).scalar_one()
