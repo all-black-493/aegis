@@ -29,6 +29,8 @@ from aegis.config.logs import Redactor
 from aegis.config.settings import Environment, load_token_pepper
 from aegis.identity.admin import IdentityAdministration
 from aegis.identity.schema import SYSTEM_WORKER_ID
+from aegis.jobs.repository import claim, lock_job
+from aegis.jobs.schema import jobs
 from aegis.policy.rules import ACTIVE_TASK_QUOTA, MAX_INPUT_BYTES, input_bytes
 from aegis.policy.service import SUBMISSION_LOCK, DecisionService
 from aegis.policy.version import CURRENT_POLICY
@@ -155,10 +157,17 @@ def _state(app_engine: Engine, task_id: UUID) -> TaskState:
 
 
 def _run(app_engine: Engine, task_id: UUID) -> JobRef:
-    job = JobRef(uuid4(), 1)
     with app_engine.begin() as connection:
         task = get_task(connection, task_id)
         assert task is not None
+        pending = connection.execute(
+            select(jobs.c.id).where(jobs.c.task_id == task_id, jobs.c.state == "pending")
+        ).scalar_one()
+        record = lock_job(connection, pending)
+        assert record is not None
+        claimed = claim(connection, record, "test-worker", 60)
+        assert claimed is not None
+        job = claimed.ref
         decided = DECISIONS.execution(connection, task, job)
         DECISIONS.record(connection, decided)
         apply_transition(

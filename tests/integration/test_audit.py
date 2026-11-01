@@ -19,6 +19,7 @@ from aegis.config.settings import DatabaseSettings
 from aegis.db.engine import connect
 from aegis.db.metadata import SCHEMA, metadata
 from aegis.identity.schema import credentials, identities, identity_roles
+from aegis.jobs.schema import jobs
 from aegis.tasks.schema import (
     security_decisions,
     task_state_transitions,
@@ -258,6 +259,7 @@ def test_table_definitions_match_the_migrated_schema(owner_engine: Engine) -> No
         security_decisions,
         task_transition_rules,
         task_state_transitions,
+        jobs,
     }
     engine = create_engine(owner_engine.url, connect_args={"options": "-c search_path=public"})
     try:

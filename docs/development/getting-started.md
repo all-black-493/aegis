@@ -6,6 +6,7 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 - an append-only audit store;
 - identities, role assignments and API credentials, administered through the `aegis` CLI;
 - an HTTP API on `127.0.0.1` with health checks, `GET /v1/me`, and routes to submit, view, list and cancel tasks;
+- a worker that runs the two built-in task kinds, `noop` and `wait`, with leases, retries and recovery;
 - the authorization rules and the shared security-decision contract;
 - task, decision and history storage whose integrity rules the database enforces;
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
@@ -13,7 +14,7 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 - the configuration and logging foundation;
 - the test and quality tooling.
 
-There is no worker yet, so submitted tasks are queued but never run. There is no agent execution, model provider, OpenShell integration, or other security control yet. Nothing executes untrusted workloads.
+The worker runs only `noop` and `wait`, which have no effects outside AEGIS. There is no agent execution, model provider, OpenShell integration, or other security control yet. Nothing executes untrusted workloads.
 
 ## Supported platform
 
@@ -59,6 +60,7 @@ make down
 | `make up` | Starts PostgreSQL and waits until its healthcheck passes. |
 | `make migrate` | Creates or updates the database roles and schema (`aegis db bootstrap`), then applies pending migrations (`aegis db migrate`). Safe to rerun. |
 | `make api` | Runs the API in the foreground on `127.0.0.1`, port `AEGIS_API_PORT` (default 8000). Stop it with Ctrl-C. Requires `make up` and `make migrate`. |
+| `make worker` | Runs the task worker in the foreground. Ctrl-C or SIGTERM stops it gracefully. Requires `make up` and `make migrate`; run as many as you like. |
 | `make down` | Stops and removes the containers. The database volume is kept. |
 | `make test` | Runs the unit tests. Needs no Docker, database, model, network or credentials. |
 | `make test-integration` | Runs the integration tests against the running PostgreSQL. Requires `make up`. |
@@ -78,12 +80,17 @@ Every target exits non-zero on failure.
 | `AEGIS_ENV` | `development` in `.env.example`; **`production` when unset** | `development`, `test` or `production`. Production refuses `DEBUG` logging. |
 | `AEGIS_LOG_LEVEL` | `INFO` (not in `.env.example`) | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `AEGIS_API_PORT` | `8000` (not in `.env.example`) | Port the API listens on. The API always binds to `127.0.0.1`. |
+| `AEGIS_WORKER_POLL_SECONDS` | `1` (not in `.env.example`) | How often an idle worker looks for work, 1–60 |
+| `AEGIS_WORKER_LEASE_SECONDS` | `30` (not in `.env.example`) | How long a claimed task stays leased without a heartbeat, 10–600 |
+| `AEGIS_WORKER_HEARTBEAT_SECONDS` | `5` (not in `.env.example`) | How often a worker renews its lease; at most a third of the lease |
+| `AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS` | `10` (not in `.env.example`) | How long a running task may finish after a stop is requested, 0–300 |
+| `AEGIS_WORKER_MAX_ATTEMPTS` | `3` (not in `.env.example`) | Attempts per task, 1 to the policy's maximum of 10 |
 | `AEGIS_POSTGRES_USER` | `aegis` | PostgreSQL bootstrap superuser, used only to create roles and databases |
 | `AEGIS_POSTGRES_DB` | `aegis` | PostgreSQL database |
 | `AEGIS_POSTGRES_PASSWORD` | generated | Bootstrap superuser password. Older 48-character values remain valid. |
 | `AEGIS_POSTGRES_PORT` | `5433` | Host port, published on `127.0.0.1` only |
 | `AEGIS_DB_OWNER_PASSWORD` | generated | Password of `aegis_owner`, which runs migrations and administration |
-| `AEGIS_DB_APP_PASSWORD` | generated | Password of `aegis_app`, which the API uses (and the worker will) |
+| `AEGIS_DB_APP_PASSWORD` | generated | Password of `aegis_app`, which the API and worker use |
 | `AEGIS_TOKEN_PEPPER` | generated | Server-side key for hashing API tokens; at least 32 characters. Changing it invalidates every issued token. |
 
 Generated secrets are 64 hex characters from a cryptographic random generator, unique per checkout.
@@ -106,7 +113,7 @@ All AEGIS objects live in the `aegis` schema of the `AEGIS_POSTGRES_DB` database
 |---|---|---|
 | `AEGIS_POSTGRES_USER` (default `aegis`) | Superuser, created by the PostgreSQL image | `aegis db bootstrap` only |
 | `aegis_owner` | Login; not a superuser; cannot create roles or databases | Migrations (`aegis db migrate`) and identity administration (`aegis identity`, `aegis credential`, `aegis role`) |
-| `aegis_app` | Login; no ownership; only the privileges each migration grants | The API (`make api`) and, from Increment 10, the worker |
+| `aegis_app` | Login; no ownership; only the privileges each migration grants | The API (`make api`) and the worker (`make worker`) |
 
 `aegis db bootstrap` is safe to rerun. Each run:
 
@@ -141,6 +148,8 @@ Tasks, the security decisions that justify their state changes, and their histor
 - any change to a task's fixed columns or to a finished task, and any change to decisions, history or the transition rules.
 
 These rules prove internal consistency, not legitimacy. See ADR-0008.
+
+Jobs in `aegis.jobs` carry admitted tasks to the worker. The database also refuses an attempt number that doesn't rise by exactly 1 at each claim, a renewed lease that had expired, and history from a worker that isn't the job's current attempt or whose lease has expired (rule D8, ADR-0009).
 
 Decisions come from `DecisionService` (ADR-0007). It checks authorization first, then the policy rules for submission and execution, where any deny wins and anything unmatched or failing is denied. Each decision records the policy version and fingerprint and is saved with its inputs, so it can be replayed. The policy reads no configuration.
 
@@ -211,6 +220,23 @@ Tasks:
 
 See ADR-0004 and ADR-0011 for the design and its limitations.
 
+## The worker
+
+`make worker` runs a worker that claims queued tasks and runs them. It connects as `aegis_app`, loads no other secret, and removes every secret variable from its own environment before running anything.
+
+- **Delegated execution.** The worker acts as `system:worker`, never as the person who submitted the task. Before each task runs, it decides `task.execute` again with the current policy: the worker must hold the `worker` role, and the submitter must still be active, still hold `task:create`, and still have an unrevoked submitting credential. If not, the task fails with that reason and nothing runs. A newer policy can also hold the task for approval.
+- **Leases.** A claimed task is leased for `AEGIS_WORKER_LEASE_SECONDS`, renewed at every heartbeat by the database clock. Every write by the worker is fenced on the job's attempt and lease, so a worker that has lost its lease cannot record anything more.
+- **Cancellation.** A cancellation request reaches a running task at the next heartbeat. A heartbeat also stops the task if its submitter has been disabled.
+- **Recovery.** If a worker dies, any worker notices the expired lease and moves the task to `interrupted`, then back to `queued` after a backoff, or to `failed` once its attempts are used up.
+- **Shutdown.** Ctrl-C or SIGTERM stops the worker claiming. A running task gets `AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS` to finish; otherwise it is released and queued again.
+- **Delivery.** Delivery is at least once: a task may run again after a crash. The only kinds are `noop` and `wait`, which have no outside effects.
+
+```bash
+make worker
+```
+
+See ADR-0009 for the design and its limitations.
+
 ## The doctor
 
 `make doctor` prints one line per check. Each check is **required** or **optional**, with a status of `PASS`, `WARN`, `FAIL` or `SKIP`.
@@ -240,7 +266,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - verify the task integrity rules both through `apply_transition()` and through direct SQL as `aegis_app`, including concurrent transitions, and that the Python and SQL transition tables are identical;
   - verify the decision service: saved decisions and their inputs, the quota, the execution rules E1–E4, evaluator errors saved as denials, approval never queuing a task, and replay;
   - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only;
-  - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event.
+  - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event;
+  - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process.
 
   They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 

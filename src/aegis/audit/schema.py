@@ -17,7 +17,7 @@ audit_events = Table(
     Column("target_type", Text),
     Column("target_id", Text),
     Column("task_id", UUID(as_uuid=True), ForeignKey("aegis.tasks.id")),
-    Column("job_id", UUID(as_uuid=True)),
+    Column("job_id", UUID(as_uuid=True), ForeignKey("aegis.jobs.id")),
     Column("decision_id", UUID(as_uuid=True), ForeignKey("aegis.security_decisions.id")),
     Column("request_id", Text),
     Column("reason_code", Text),
