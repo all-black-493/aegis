@@ -6,7 +6,8 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 - an append-only audit store;
 - identities, role assignments and API credentials, administered through the `aegis` CLI;
 - an HTTP API on `127.0.0.1` with health checks and `GET /v1/me`, the only route that requires a token so far;
-- the authorization rules and the shared security-decision contract (pure code, not yet used by any process);
+- the authorization rules and the shared security-decision contract;
+- task, decision and history storage whose integrity rules the database enforces (no service or API creates tasks yet);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling.
@@ -128,6 +129,18 @@ Security-relevant events are stored in `aegis.audit_events`:
 
 The audit table is **not** tamper-proof against the owner or the superuser. See ADR-0010 for exactly what is and isn't guaranteed.
 
+### Tasks and decisions
+
+Tasks, the security decisions that justify their state changes, and their history are stored in `aegis.tasks`, `aegis.security_decisions` and `aegis.task_state_transitions`. The legal transitions are listed in `aegis.task_transition_rules` and in `aegis.tasks.states`, and a test keeps the two identical. The database itself refuses, even for direct SQL as `aegis_app`:
+
+- an illegal transition, a version that doesn't rise by exactly 1, or a state change without its history row;
+- a history row without a state change, or a task committed in state `created`;
+- queuing or running a task without an allow decision for that task, from the right stage, made in the same transaction and used only once;
+- a decision whose subject isn't the task's initiator;
+- any change to a task's fixed columns or to a finished task, and any change to decisions, history or the transition rules.
+
+These rules prove internal consistency, not legitimacy. See ADR-0008.
+
 ### Identities and credentials
 
 Identities, role assignments and API credentials are managed with the `aegis` CLI, which connects as `aegis_owner`. Run it through uv with the project's `.env`:
@@ -206,6 +219,7 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - recreate, bootstrap and migrate a separate `<AEGIS_POSTGRES_DB>_test` database, then verify role privileges, migrations and the CLI against it;
   - verify the audit table's privileges, triggers and constraints, transactional recording and redaction;
   - verify the identity tables' privileges, triggers and constraints, token authentication, the administration rules and the `aegis` CLI, including that tokens and secrets never appear in storage or output;
+  - verify the task integrity rules both through `apply_transition()` and through direct SQL as `aegis_app`, including concurrent transitions, and that the Python and SQL transition tables are identical;
   - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only.
 
   They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.

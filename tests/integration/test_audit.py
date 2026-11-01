@@ -19,6 +19,12 @@ from aegis.config.settings import DatabaseSettings
 from aegis.db.engine import connect
 from aegis.db.metadata import SCHEMA, metadata
 from aegis.identity.schema import credentials, identities, identity_roles
+from aegis.tasks.schema import (
+    security_decisions,
+    task_state_transitions,
+    task_transition_rules,
+    tasks,
+)
 
 FAKE_SECRET = "fake-secret-value-0123456789abcdef"
 INSERT_COLUMNS = "event_id, event_type, source, outcome"
@@ -243,7 +249,16 @@ def _include_object(_obj: Any, name: str | None, kind: str, _reflected: bool, _o
 
 
 def test_table_definitions_match_the_migrated_schema(owner_engine: Engine) -> None:
-    assert set(metadata.tables.values()) == {audit_events, identities, identity_roles, credentials}
+    assert set(metadata.tables.values()) == {
+        audit_events,
+        identities,
+        identity_roles,
+        credentials,
+        tasks,
+        security_decisions,
+        task_transition_rules,
+        task_state_transitions,
+    }
     engine = create_engine(owner_engine.url, connect_args={"options": "-c search_path=public"})
     try:
         with engine.connect() as connection:
