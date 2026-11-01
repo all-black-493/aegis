@@ -9,7 +9,7 @@ from aegis.authorization.access import ActorContext
 from aegis.authorization.catalog import IdentityKind, Role
 from aegis.config.settings import Secret
 from aegis.identity.schema import credentials, identities, identity_roles
-from aegis.identity.tokens import HASH_SCHEME, generate_token, parse_token
+from aegis.identity.tokens import HASH_SCHEME, Token, generate_token, parse_token
 
 _UNKNOWN_DIGEST = bytes(32)
 
@@ -40,11 +40,21 @@ class AuthenticationError(Exception):
 def authenticate(
     connection: Connection, raw_token: str | None, pepper: Secret, *, now: datetime | None = None
 ) -> ActorContext:
+    return verify(connection, presented_token(raw_token), pepper, now=now)
+
+
+def presented_token(raw_token: str | None) -> Token:
     if not raw_token:
         raise AuthenticationError(FailureReason.MISSING)
     token = parse_token(raw_token)
     if token is None:
         raise AuthenticationError(FailureReason.MALFORMED)
+    return token
+
+
+def verify(
+    connection: Connection, token: Token, pepper: Secret, *, now: datetime | None = None
+) -> ActorContext:
     at = func.now() if now is None else literal(now, TIMESTAMP(timezone=True))
     row = connection.execute(
         select(

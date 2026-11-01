@@ -2,6 +2,7 @@ import socket
 import subprocess
 from typing import NoReturn
 
+import psycopg
 import pytest
 
 
@@ -18,3 +19,5 @@ def _forbid_external_access(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
     monkeypatch.setattr(socket.socket, "bind", _refuse)
     monkeypatch.setattr(subprocess, "Popen", _refuse)
+    # libpq opens its own sockets, out of reach of the socket patches above.
+    monkeypatch.setattr(psycopg, "connect", _refuse)

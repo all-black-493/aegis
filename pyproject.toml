@@ -8,8 +8,10 @@ requires-python = ">=3.13,<3.14"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     "alembic>=1.20.1",
+    "fastapi>=0.162.0",
     "psycopg[binary]>=3.3.6",
     "sqlalchemy>=2.1.6",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
@@ -17,6 +19,7 @@ aegis = "aegis.apps.cli.__main__:main"
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.16.0",
     "mypy>=2.4.1",
     "pytest>=9.2.0",
     "ruff>=0.17.3",

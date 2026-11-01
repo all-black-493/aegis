@@ -34,6 +34,7 @@ VARIABLES = (
         secret=True,
         required=True,
     ),
+    Variable("AEGIS_API_PORT", "API port on 127.0.0.1; default 8000", in_template=False),
     Variable(
         "AEGIS_TOKEN_PEPPER",
         "server-side key for hashing API tokens (API, administration)",

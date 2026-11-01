@@ -31,7 +31,7 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 
 | Item | Status |
 |---|---|
-| G1 | The mechanism is in place: `AuditRecorder.record()` refuses to write unless the caller's connection is inside a transaction, and inserts within that transaction. A test shows that a failing audit write rolls back the operation around it. Each operation that changes state adopts it as it is built. The 503 response arrives with the API in Increment 6. |
+| G1 | The mechanism is in place: `AuditRecorder.record()` refuses to write unless the caller's connection is inside a transaction, and inserts within that transaction. A test shows that a failing audit write rolls back the operation around it. Each operation that changes state adopts it as it is built. The API turns database errors, including a failed audit write, into 503 (ADR-0004); no API route changes state until Increment 9. |
 | G2 | In force. Tested for `aegis_app` (no privilege) and for the owner (stopped by triggers). |
 | G3 | In force for database time: a trigger overwrites `occurred_at` with the transaction time on every insert, and `aegis_app` cannot write that column at all. Every event has an `event_id`. `request_id`, `task_id`, `job_id` and `decision_id` are stored whenever the operation has them. |
 | G4 | Not yet in force. Rules D2 and D6 arrive with the task tables in Increment 7, and D8 with the worker in Increment 10. |

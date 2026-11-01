@@ -5,12 +5,13 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
 - identities, role assignments and API credentials, administered through the `aegis` CLI;
+- an HTTP API on `127.0.0.1` with health checks and `GET /v1/me`, the only route that requires a token so far;
 - the authorization rules and the shared security-decision contract (pure code, not yet used by any process);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling.
 
-There is no API, worker, agent execution, model provider, OpenShell integration, or other security control yet. Tokens can be issued, but no process accepts them until the API arrives (Increment 6). Only the CLI administration commands emit audit events. Nothing executes untrusted workloads.
+There is no task API, worker, agent execution, model provider, OpenShell integration, or other security control yet. Only the CLI administration commands and failed API authentications emit audit events. Nothing executes untrusted workloads.
 
 ## Supported platform
 
@@ -55,6 +56,7 @@ make down
 | `make doctor` | Diagnoses the local environment (see below). |
 | `make up` | Starts PostgreSQL and waits until its healthcheck passes. |
 | `make migrate` | Creates or updates the database roles and schema (`aegis db bootstrap`), then applies pending migrations (`aegis db migrate`). Safe to rerun. |
+| `make api` | Runs the API in the foreground on `127.0.0.1`, port `AEGIS_API_PORT` (default 8000). Stop it with Ctrl-C. Requires `make up` and `make migrate`. |
 | `make down` | Stops and removes the containers. The database volume is kept. |
 | `make test` | Runs the unit tests. Needs no Docker, database, model, network or credentials. |
 | `make test-integration` | Runs the integration tests against the running PostgreSQL. Requires `make up`. |
@@ -73,12 +75,13 @@ Every target exits non-zero on failure.
 |---|---|---|
 | `AEGIS_ENV` | `development` in `.env.example`; **`production` when unset** | `development`, `test` or `production`. Production refuses `DEBUG` logging. |
 | `AEGIS_LOG_LEVEL` | `INFO` (not in `.env.example`) | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `AEGIS_API_PORT` | `8000` (not in `.env.example`) | Port the API listens on. The API always binds to `127.0.0.1`. |
 | `AEGIS_POSTGRES_USER` | `aegis` | PostgreSQL bootstrap superuser, used only to create roles and databases |
 | `AEGIS_POSTGRES_DB` | `aegis` | PostgreSQL database |
 | `AEGIS_POSTGRES_PASSWORD` | generated | Bootstrap superuser password. Older 48-character values remain valid. |
 | `AEGIS_POSTGRES_PORT` | `5433` | Host port, published on `127.0.0.1` only |
 | `AEGIS_DB_OWNER_PASSWORD` | generated | Password of `aegis_owner`, which runs migrations and administration |
-| `AEGIS_DB_APP_PASSWORD` | generated | Password of `aegis_app`, which the API and worker will use |
+| `AEGIS_DB_APP_PASSWORD` | generated | Password of `aegis_app`, which the API uses (and the worker will) |
 | `AEGIS_TOKEN_PEPPER` | generated | Server-side key for hashing API tokens; at least 32 characters. Changing it invalidates every issued token. |
 
 Generated secrets are 64 hex characters from a cryptographic random generator, unique per checkout.
@@ -101,7 +104,7 @@ All AEGIS objects live in the `aegis` schema of the `AEGIS_POSTGRES_DB` database
 |---|---|---|
 | `AEGIS_POSTGRES_USER` (default `aegis`) | Superuser, created by the PostgreSQL image | `aegis db bootstrap` only |
 | `aegis_owner` | Login; not a superuser; cannot create roles or databases | Migrations (`aegis db migrate`) and identity administration (`aegis identity`, `aegis credential`, `aegis role`) |
-| `aegis_app` | Login; no ownership; only the privileges each migration grants | The API and worker, from later increments |
+| `aegis_app` | Login; no ownership; only the privileges each migration grants | The API (`make api`) and, from Increment 10, the worker |
 
 `aegis db bootstrap` is safe to rerun. Each run:
 
@@ -153,6 +156,30 @@ Every command also accepts `--database <name>` to target another database.
 
 See ADR-0005 for the design and its limitations.
 
+## The API
+
+`make api` serves the API on `127.0.0.1` only. It connects as `aegis_app` and holds the token pepper; it never has owner or superuser credentials.
+
+| Route | Authentication | Result |
+|---|---|---|
+| `GET /health/live` | none | `200 {"status": "alive"}` while the process runs |
+| `GET /health/ready` | none | `200 {"status": "ready"}` when the database answers and its schema is current; otherwise `503` |
+| `GET /v1/me` | bearer token | The caller's identity ID, name, kind, roles and credential ID |
+
+```bash
+TOKEN=$(uv run --locked --env-file .env aegis credential issue alice)
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/me
+```
+
+- Every `/v1` route requires a token. Every authentication failure gets the same `401`, whatever the reason. Failures involving an existing credential (wrong secret, revoked, expired, disabled identity) are audited as `auth.failed`.
+- There are no administration routes; use the CLI.
+- Errors are problem details (`application/problem+json`) with a stable `code`. They never echo what was sent.
+- Request bodies are limited to 64 KiB and must be `application/json`.
+- Every response carries an `X-Request-ID`, which also appears in the logs and audit events.
+- `/docs` and `/openapi.json` exist only when `AEGIS_ENV=development`.
+
+See ADR-0004 for the design and its limitations.
+
 ## The doctor
 
 `make doctor` prints one line per check. Each check is **required** or **optional**, with a status of `PASS`, `WARN`, `FAIL` or `SKIP`.
@@ -169,7 +196,7 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
 
 ## Tests
 
-- **Unit tests** (`tests/unit`) are hermetic. A guard in `tests/unit/conftest.py` fails any test that opens a network connection or starts a subprocess. `tests/unit/test_layering.py` enforces the import rules recorded in ADR-0002.
+- **Unit tests** (`tests/unit`) are hermetic. A guard in `tests/unit/conftest.py` fails any test that opens a network or database connection or starts a subprocess. API unit tests use an in-process test client. `tests/unit/test_layering.py` enforces the import rules recorded in ADR-0002.
 - **Integration tests** (`tests/integration`) use the real Docker CLI, `git`, `make` and PostgreSQL. They:
   - connect from the host and run `SELECT 1`;
   - check that PostgreSQL 17 is running and that a wrong password is rejected;
@@ -178,7 +205,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
   - verify `.gitignore`;
   - recreate, bootstrap and migrate a separate `<AEGIS_POSTGRES_DB>_test` database, then verify role privileges, migrations and the CLI against it;
   - verify the audit table's privileges, triggers and constraints, transactional recording and redaction;
-  - verify the identity tables' privileges, triggers and constraints, token authentication, the administration rules and the `aegis` CLI, including that tokens and secrets never appear in storage or output.
+  - verify the identity tables' privileges, triggers and constraints, token authentication, the administration rules and the `aegis` CLI, including that tokens and secrets never appear in storage or output;
+  - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only.
 
   They fail, never skip, when PostgreSQL or the settings are missing. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 
@@ -193,6 +221,7 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` doe
 | `make check` | Exit 0. |
 | `make test` | All unit tests pass. |
 | `make test-integration` | All integration tests pass. |
+| `make api`, then `curl http://127.0.0.1:8000/health/ready` | `{"status":"ready"}` |
 | `make down`, then `make up` | Previously stored data is still present. |
 
 ### Continuous integration
