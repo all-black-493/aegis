@@ -55,6 +55,31 @@ VARIABLES = (
         in_template=False,
     ),
     Variable(
+        "AEGIS_MODEL_PROVIDER",
+        "model provider for the worker: mock or ollama; default mock",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_OLLAMA_PORT",
+        "port of the local Ollama server on 127.0.0.1; default 11436",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_OLLAMA_MODEL",
+        "local Ollama model, required when the provider is ollama",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_OLLAMA_MODEL_DIGEST",
+        "optional pin: the model's 64-character digest from Ollama",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_MODEL_TIMEOUT_SECONDS",
+        "how long a model call may wait for output, 5-600; default 120",
+        in_template=False,
+    ),
+    Variable(
         "AEGIS_TOKEN_PEPPER",
         "server-side key for hashing API tokens (API, administration)",
         secret=True,

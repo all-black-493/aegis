@@ -8,6 +8,7 @@ from aegis.config.settings import (
     SettingsError,
     load_api_settings,
     load_common_settings,
+    load_model_settings,
     load_token_pepper,
     load_worker_settings,
 )
@@ -360,6 +361,7 @@ def _env_problem(values: dict[str, str]) -> str | None:
         load_common_settings(values)
         load_api_settings(values)
         load_worker_settings(values)
+        load_model_settings(values)
         load_token_pepper(values)
     except SettingsError as error:
         return "; ".join(error.problems)

@@ -257,6 +257,9 @@ def test_missing_env_file_fails_and_blocks_postgres_checks(system: FakeSystem, r
         ({"AEGIS_API_PORT": "80"}, "AEGIS_API_PORT must be an integer"),
         ({"AEGIS_WORKER_LEASE_SECONDS": "5"}, "AEGIS_WORKER_LEASE_SECONDS must be an integer"),
         ({"AEGIS_WORKER_MAX_ATTEMPTS": "11"}, "AEGIS_WORKER_MAX_ATTEMPTS must be an integer"),
+        ({"AEGIS_MODEL_PROVIDER": "ollama"}, "AEGIS_OLLAMA_MODEL is required"),
+        ({"AEGIS_OLLAMA_MODEL": "hf.co/user/model"}, "must be a local model name"),
+        ({"AEGIS_OLLAMA_HOST": "10.0.0.5"}, "AEGIS_OLLAMA_HOST is not a known AEGIS variable"),
         (
             {"AEGIS_WORKER_LEASE_SECONDS": "30", "AEGIS_WORKER_HEARTBEAT_SECONDS": "20"},
             "at most a third of the lease",

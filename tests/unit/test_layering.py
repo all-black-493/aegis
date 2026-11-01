@@ -25,6 +25,19 @@ AUTHORIZATION_INDEPENDENT_OF = (
     "alembic",
 )
 EVALUATION_FRAMEWORKS = ("deepeval", "deepteam")
+MODEL_PACKAGES = ("aegis.model_providers", "aegis.integrations")
+MODEL_PACKAGES_INDEPENDENT_OF = (
+    "aegis.db",
+    "aegis.audit",
+    "aegis.identity",
+    "aegis.authorization",
+    "aegis.policy",
+    "aegis.tasks",
+    "aegis.jobs",
+    "sqlalchemy",
+    "psycopg",
+    "alembic",
+)
 ENVIRONMENT_ACCESS = frozenset({"environ", "environb", "getenv", "putenv", "unsetenv"})
 
 
@@ -52,6 +65,16 @@ RULES = (
     *(
         Rule("aegis", framework, "evaluation frameworks stay outside the application (ADR-0012)")
         for framework in EVALUATION_FRAMEWORKS
+    ),
+    *(
+        Rule(source, forbidden, "model providers know nothing of AEGIS's state or decisions")
+        for source in MODEL_PACKAGES
+        for forbidden in MODEL_PACKAGES_INDEPENDENT_OF
+    ),
+    *(
+        Rule(package, model, "decisions cannot depend on the model")
+        for package in SECURITY_PACKAGES
+        for model in MODEL_PACKAGES
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
     Rule(
@@ -165,6 +188,15 @@ def test_source_tree_respects_the_layering_rules() -> None:
         ("aegis/jobs/worker.py", "import deepeval\n", "outside the application"),
         ("aegis/policy/rules.py", "from deepteam import red_team\n", "outside the application"),
         ("aegis/apps/worker/__main__.py", "from deepeval.metrics import X\n", "outside the"),
+        ("aegis/model_providers/mock.py", "from aegis.db import engine\n", "know nothing"),
+        ("aegis/model_providers/contract.py", "import sqlalchemy\n", "know nothing"),
+        (
+            "aegis/integrations/ollama/client.py",
+            "from aegis.tasks import service\n",
+            "know nothing",
+        ),
+        ("aegis/policy/rules.py", "from aegis.model_providers import contract\n", "the model"),
+        ("aegis/authorization/access.py", "import aegis.integrations.ollama\n", "the model"),
     ],
 )
 def test_forbidden_dependencies_are_detected(
@@ -183,5 +215,7 @@ def test_permitted_dependencies_are_not_reported(tmp_path: Path) -> None:
     _write(tmp_path, "aegis/tasks/service.py", "from aegis.config.settings import X\n")
     _write(tmp_path, "aegis/policy/rules.py", "from aegis.authorization import catalog\n")
     _write(tmp_path, "aegis/config/logs.py", "from aegis.config.settings import X\nimport os\n")
+    _write(tmp_path, "aegis/model_providers/factory.py", "from aegis.config.settings import X\n")
+    _write(tmp_path, "aegis/jobs/worker.py", "from aegis.model_providers import contract\n")
 
     assert violations(tmp_path) == []
