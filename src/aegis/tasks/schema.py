@@ -100,6 +100,11 @@ security_decisions = Table(
         ["aegis.tasks.id", "aegis.tasks.owner_id"],
         name="fk_security_decisions_task_id_owner_tasks",
     ),
+    ForeignKeyConstraint(
+        ["job_id", "task_id"],
+        ["aegis.jobs.id", "aegis.jobs.task_id"],
+        name="fk_security_decisions_job_id_jobs",
+    ),
     Index("ix_security_decisions_task_id", "task_id"),
 )
 
@@ -161,5 +166,10 @@ task_state_transitions = Table(
             "aegis.security_decisions.decided_at",
         ],
         name="fk_task_state_transitions_decision_id_security_decisions",
+    ),
+    ForeignKeyConstraint(
+        ["job_id", "task_id"],
+        ["aegis.jobs.id", "aegis.jobs.task_id"],
+        name="fk_task_state_transitions_job_id_jobs",
     ),
 )

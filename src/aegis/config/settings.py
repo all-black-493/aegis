@@ -10,6 +10,9 @@ APP_ROLE = "aegis_app"
 DATABASE_HOST = "127.0.0.1"
 API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8000
+# Mirrors aegis.policy.rules.MAX_JOB_ATTEMPTS, which configuration may not import; a test keeps
+# them equal, and the worker re-checks at startup.
+MAX_WORKER_ATTEMPTS = 10
 MIN_SECRET_LENGTH = 16
 MIN_PEPPER_LENGTH = 32
 
@@ -72,6 +75,15 @@ class ApiSettings:
     port: int
 
 
+@dataclass(frozen=True)
+class WorkerSettings:
+    poll_seconds: float = 1
+    lease_seconds: float = 30
+    heartbeat_seconds: float = 5
+    shutdown_grace_seconds: float = 10
+    max_attempts: int = 3
+
+
 def load_database_settings(environ: Mapping[str, str], role: DatabaseRole) -> DatabaseSettings:
     problems = unknown_variables(environ)
     name = _required(environ, "AEGIS_POSTGRES_DB", problems)
@@ -112,6 +124,39 @@ def load_api_settings(environ: Mapping[str, str]) -> ApiSettings:
     return ApiSettings(port)
 
 
+def load_worker_settings(environ: Mapping[str, str]) -> WorkerSettings:
+    problems = unknown_variables(environ)
+    defaults = WorkerSettings()
+    poll = _bounded(environ, "AEGIS_WORKER_POLL_SECONDS", 1, 60, defaults.poll_seconds, problems)
+    lease = _bounded(
+        environ, "AEGIS_WORKER_LEASE_SECONDS", 10, 600, defaults.lease_seconds, problems
+    )
+    heartbeat = _bounded(
+        environ, "AEGIS_WORKER_HEARTBEAT_SECONDS", 1, 200, defaults.heartbeat_seconds, problems
+    )
+    grace = _bounded(
+        environ,
+        "AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS",
+        0,
+        300,
+        defaults.shutdown_grace_seconds,
+        problems,
+    )
+    attempts = _bounded(
+        environ,
+        "AEGIS_WORKER_MAX_ATTEMPTS",
+        1,
+        MAX_WORKER_ATTEMPTS,
+        defaults.max_attempts,
+        problems,
+    )
+    if heartbeat * 3 > lease:
+        problems.append("AEGIS_WORKER_HEARTBEAT_SECONDS must be at most a third of the lease")
+    if problems:
+        raise SettingsError(problems)
+    return WorkerSettings(poll, lease, heartbeat, grace, int(attempts))
+
+
 def load_token_pepper(environ: Mapping[str, str]) -> Secret:
     problems = unknown_variables(environ)
     pepper = _secret(environ, "AEGIS_TOKEN_PEPPER", problems, MIN_PEPPER_LENGTH)
@@ -141,6 +186,23 @@ def _port(environ: Mapping[str, str], name: str, problems: list[str]) -> int:
         return int(raw)
     problems.append(f"{name} must be an integer from 1024 to 65535")
     return 0
+
+
+def _bounded(
+    environ: Mapping[str, str],
+    name: str,
+    low: int,
+    high: int,
+    default: float,
+    problems: list[str],
+) -> float:
+    raw = environ.get(name, "").strip()
+    if not raw:
+        return default
+    if raw.isascii() and raw.isdigit() and low <= int(raw) <= high:
+        return int(raw)
+    problems.append(f"{name} must be an integer from {low} to {high}")
+    return default
 
 
 def _secret(

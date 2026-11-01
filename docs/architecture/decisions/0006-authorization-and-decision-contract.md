@@ -41,7 +41,7 @@ Authorization must be default-deny, independent of configuration and storage, an
 
 | Rule | Requirement | In code (now) | In the database |
 |---|---|---|---|
-| C1 | Same task and job attempt | `require_consistent` | Composite foreign key from history to the decision and a trigger comparing job attempts (ADR-0008); the attempt's currency arrives with D8 (Increment 10) |
+| C1 | Same task and job attempt | `require_consistent` | Composite foreign key from history to the decision and a trigger comparing job attempts (ADR-0008); D8 requires the job's current attempt (ADR-0009) |
 | C2 | Action matches the transition | `require_consistent` | `task_transition_rules`, checked by a trigger on history (ADR-0008) |
 | C3 | Effect matches the target state; deny and approval-required never justify `queued` or `running` | `require_consistent` | `task_transition_rules`, checked by a trigger on history (ADR-0008) |
 | C4 | Subject is the task's initiator | `require_consistent` | Composite foreign key to the task's initiator (ADR-0008) |

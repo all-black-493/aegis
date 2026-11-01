@@ -36,6 +36,25 @@ VARIABLES = (
     ),
     Variable("AEGIS_API_PORT", "API port on 127.0.0.1; default 8000", in_template=False),
     Variable(
+        "AEGIS_WORKER_POLL_SECONDS", "worker idle poll interval, 1-60; default 1", in_template=False
+    ),
+    Variable("AEGIS_WORKER_LEASE_SECONDS", "job lease, 10-600; default 30", in_template=False),
+    Variable(
+        "AEGIS_WORKER_HEARTBEAT_SECONDS",
+        "lease renewal interval, at most a third of the lease; default 5",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS",
+        "time a running task gets to finish at shutdown, 0-300; default 10",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_WORKER_MAX_ATTEMPTS",
+        "attempts per task, 1 to the policy's 10; default 3",
+        in_template=False,
+    ),
+    Variable(
         "AEGIS_TOKEN_PEPPER",
         "server-side key for hashing API tokens (API, administration)",
         secret=True,

@@ -6,8 +6,8 @@ UV ?= uv
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ENVTOOL = $(UV) run --project $(ROOT) --locked python -m aegis.config.envtool
 
-.PHONY: help setup env-file env-upgrade doctor up migrate api down test test-integration lint \
-	format typecheck check require-uv require-env
+.PHONY: help setup env-file env-upgrade doctor up migrate api worker down test test-integration \
+	lint format typecheck check require-uv require-env
 
 help: ## Show available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -35,6 +35,9 @@ migrate: require-uv require-env ## Create or update database roles, then apply m
 
 api: require-uv require-env ## Run the API on 127.0.0.1 (port AEGIS_API_PORT, default 8000)
 	$(UV) run --locked --env-file .env python -m aegis.apps.api
+
+worker: require-uv require-env ## Run the task worker
+	$(UV) run --locked --env-file .env python -m aegis.apps.worker
 
 down: require-env ## Stop services (the database volume is kept)
 	docker compose down

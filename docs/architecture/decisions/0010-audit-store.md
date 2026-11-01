@@ -34,7 +34,7 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 | G1 | The mechanism is in place: `AuditRecorder.record()` refuses to write unless the caller's connection is inside a transaction, and inserts within that transaction. A test shows that a failing audit write rolls back the operation around it. Each operation that changes state adopts it as it is built. The API turns database errors, including a failed audit write, into 503 (ADR-0004). The task routes write each change, decision and audit event in one transaction, and tests show a failed audit write leaves no task, decision or event behind (ADR-0011). |
 | G2 | In force. Tested for `aegis_app` (no privilege) and for the owner (stopped by triggers). |
 | G3 | In force for database time: a trigger overwrites `occurred_at` with the transaction time on every insert, and `aegis_app` cannot write that column at all. Every event has an `event_id`. `request_id`, `task_id`, `job_id` and `decision_id` are stored whenever the operation has them. |
-| G4 | Partly in force: rules D2 and D6 hold for the task tables (ADR-0008). D8 arrives with the worker in Increment 10. |
+| G4 | In force: rules D2 and D6 hold for the task tables (ADR-0008), and D8 ties every worker history row to its job's current attempt (ADR-0009). |
 | N1–N6 | Apply as written. |
 
 ## Decisions
@@ -67,9 +67,9 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 | `task.transitioned` | `from_state`, `to_state` | Increments 7–10 |
 | `task.cancel_requested` | none | Increment 9 |
 | `task.read_privileged` | `scope` | Increment 9 |
-| `job.failed` | `attempt`, `error_code` | Increment 10 |
-| `job.interrupted`, `job.fence_lost` | `attempt` | Increment 10 |
-| `job.retried` | `attempt`, `run_after` | Increment 10 |
+| `job.failed` | `attempt`, `error_code` | Increment 10 (the worker, ADR-0009) |
+| `job.interrupted`, `job.fence_lost` | `attempt` | Increment 10 (the worker, ADR-0009) |
+| `job.retried` | `attempt`, `run_after` | Increment 10 (the worker, ADR-0009) |
 
 The increments that emit these events may refine their detail keys through reviewed code changes.
 

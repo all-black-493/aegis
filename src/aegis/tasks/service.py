@@ -12,6 +12,8 @@ from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.access import ActorContext, ResourceRef, authorize
 from aegis.authorization.catalog import Action, ResourceType
 from aegis.authorization.contract import Effect, SecurityDecision
+from aegis.jobs.repository import create_job, finish_pending
+from aegis.policy.rules import MAX_JOB_ATTEMPTS
 from aegis.policy.service import Decided, DecisionService
 from aegis.tasks.repository import (
     NewTask,
@@ -211,10 +213,16 @@ class TaskService:
             connection,
             _event(AuditEventType.TASK_CREATED, actor, decision, task, {"kind": task.kind.value}),
         )
-        target = (
-            TaskState.QUEUED if decision.effect is Effect.ALLOW else TaskState.AWAITING_APPROVAL
+        if decision.effect is not Effect.ALLOW:
+            return self._transition(connection, actor, task, TaskState.AWAITING_APPROVAL, decision)
+        queued = self._transition(connection, actor, task, TaskState.QUEUED, decision)
+        create_job(
+            connection,
+            task.task_id,
+            max_attempts=MAX_JOB_ATTEMPTS,
+            correlation_id=decision.request_id,
         )
-        return self._transition(connection, actor, task, target, decision)
+        return queued
 
     def _cancel(
         self,
@@ -227,6 +235,7 @@ class TaskService:
             return None
         if task.state is not TaskState.RUNNING:
             cancelled = self._transition(connection, actor, task, TaskState.CANCELLED, decision)
+            finish_pending(connection, task.task_id, "cancelled")
             return Cancelled(cancelled, pending=False)
         # A running task stops at the worker's next heartbeat; the request is recorded once.
         if task.cancel_requested_by is not None:

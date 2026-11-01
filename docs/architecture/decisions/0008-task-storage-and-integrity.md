@@ -36,7 +36,7 @@ Further rules enforced the same way:
 - A cancellation request, once made, cannot change, and a running task can be cancelled only after one.
 - Tasks are never deleted, and decisions, history and rules are append-only, including for the owner and including `TRUNCATE`.
 
-D8 (job attempts and fencing) arrives with the jobs table in Increment 10.
+D8 (job attempts and fencing) is enforced on the jobs table and on history rows written by a worker (ADR-0009).
 
 ## Consequences and limitations
 

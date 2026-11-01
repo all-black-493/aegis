@@ -16,6 +16,7 @@ from aegis.config.logs import Redactor
 from aegis.config.settings import Secret
 from aegis.identity.admin import IdentityAdministration
 from aegis.identity.schema import SYSTEM_WORKER_ID
+from aegis.jobs.repository import claim, create_job
 from aegis.policy.rules import ACTIVE_TASK_QUOTA, Outcome
 from aegis.policy.service import Decided, DecisionService, ReplayError
 from aegis.policy.version import CURRENT_POLICY
@@ -121,6 +122,17 @@ def _apply(
         service.policy,
         RECORDER,
     )
+
+
+def _job(connection: Connection, task: TaskRecord) -> JobRef:
+    job = claim(
+        connection,
+        create_job(connection, task.task_id, max_attempts=3, correlation_id=None),
+        "test-worker",
+        60,
+    )
+    assert job is not None
+    return job.ref
 
 
 def _queued(app_engine: Engine, person: Person) -> TaskRecord:
@@ -235,7 +247,7 @@ def test_evaluator_errors_are_denied_and_saved(app_tx: Connection, operator: Per
 def test_an_allowed_execution_runs_the_task(app_tx: Connection, operator: Person) -> None:
     _, task = _submit(app_tx, operator)
     assert task is not None
-    job = JobRef(uuid4(), 1)
+    job = _job(app_tx, task)
 
     decided = SERVICE.execution(app_tx, task, job)
     SERVICE.record(app_tx, decided)
@@ -268,9 +280,8 @@ def test_execution_rules_e2_to_e4_fail_the_task(
         else:
             assert operator.actor.credential_id is not None
             administration.revoke_credential(operator.actor.credential_id)
-    job = JobRef(uuid4(), 1)
-
     with app_engine.begin() as connection:
+        job = _job(connection, task)
         decided = SERVICE.execution(connection, task, job)
         SERVICE.record(connection, decided)
         failed = _apply(connection, task, S.FAILED, decided, job)
@@ -333,7 +344,7 @@ def test_saved_decisions_replay_identically(
     ]
     _, task = _submit(app_tx, operator)
     assert task is not None
-    execution = SERVICE.execution(app_tx, task, JobRef(uuid4(), 1))
+    execution = SERVICE.execution(app_tx, task, _job(app_tx, task))
     SERVICE.record(app_tx, execution)
 
     for decided in [*decisions, execution]:
