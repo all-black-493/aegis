@@ -14,6 +14,16 @@ AUDIT_INDEPENDENT_OF = (
     "aegis.tasks",
     "aegis.jobs",
 )
+AUTHORIZATION_INDEPENDENT_OF = (
+    "aegis.db",
+    "aegis.audit",
+    "aegis.identity",
+    "aegis.tasks",
+    "aegis.jobs",
+    "sqlalchemy",
+    "psycopg",
+    "alembic",
+)
 ENVIRONMENT_ACCESS = frozenset({"environ", "environb", "getenv", "putenv", "unsetenv"})
 
 
@@ -33,6 +43,10 @@ RULES = (
     *(
         Rule("aegis.audit", package, "audit depends only on configuration and the database")
         for package in AUDIT_INDEPENDENT_OF
+    ),
+    *(
+        Rule("aegis.authorization", package, "authorization is pure: no storage or I/O")
+        for package in AUTHORIZATION_INDEPENDENT_OF
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
     Rule(
@@ -141,6 +155,8 @@ def test_source_tree_respects_the_layering_rules() -> None:
         ("aegis/config/settings.py", "from aegis.audit import recorder\n", "bottom layer"),
         ("aegis/audit/recorder.py", "from aegis.identity import service\n", "audit depends only"),
         ("aegis/audit/recorder.py", "from ..tasks.service import x\n", "audit depends only"),
+        ("aegis/authorization/access.py", "import sqlalchemy\n", "authorization is pure"),
+        ("aegis/authorization/access.py", "from aegis.db import engine\n", "authorization is pure"),
     ],
 )
 def test_forbidden_dependencies_are_detected(
