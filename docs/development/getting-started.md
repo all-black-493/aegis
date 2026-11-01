@@ -4,6 +4,7 @@ AEGIS has completed **Phase 0** and is building **Phase 1**. The repository prov
 
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
+- the authorization rules and the shared security-decision contract (pure code, not yet used by any process);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling.
