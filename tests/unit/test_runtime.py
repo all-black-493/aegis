@@ -17,12 +17,8 @@ from aegis.integrations.openshell.cli import (
     OpenShellCli,
     environment,
 )
-from aegis.integrations.openshell.runtime import (
-    OpenShellRuntime,
-    is_managed,
-    parse_sandbox,
-    parse_verdict,
-)
+from aegis.integrations.openshell.parsing import parse_sandbox, parse_verdict
+from aegis.integrations.openshell.runtime import OpenShellRuntime, is_managed
 from aegis.runtime.contract import (
     MAX_EXEC_SECONDS,
     REQUIRED_PROVER_DOMAINS,
@@ -91,7 +87,7 @@ def test_invalid_runtime_settings_are_refused(name: str, value: str) -> None:
     [
         {"name": "sandbox-1"},
         {"name": "aegis-UPPER"},
-        {"name": "aegis-" + "x" * 41},
+        {"name": "aegis-" + "x" * 14},
         {"name": "aegis-trailing-"},
         {"image": "--policy=/tmp/open.yaml"},
         {"image": "ubuntu:24.04 --gpu"},
@@ -289,3 +285,9 @@ def test_untrustworthy_prover_reports_are_refused(
 ) -> None:
     with pytest.raises(error):
         parse_verdict(report, exit_code)
+
+
+def test_sandbox_names_fit_openshells_19_character_limit() -> None:
+    assert SandboxSpec("aegis-" + "x" * 13, "ubuntu:24.04", POLICY).name == "aegis-xxxxxxxxxxxxx"
+    with pytest.raises(InvalidSandboxError):
+        SandboxSpec("aegis-" + "x" * 14, "ubuntu:24.04", POLICY)

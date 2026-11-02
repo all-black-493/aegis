@@ -17,12 +17,12 @@ from aegis.runtime.contract import (
 )
 
 # Bump with any change to the files below; the fingerprint test fails until both change together.
-SANDBOX_POLICY_VERSION = "2026.11.02-1"
+SANDBOX_POLICY_VERSION = "2026.11.02-2"
 POLICY_DIR = Path(__file__).resolve().parents[3] / "deploy" / "openshell"
 POLICY_FILES = ("boundary.yaml", "probe.yaml", "probe/Dockerfile")
 # Written into the image by deploy/openshell/probe/Dockerfile.
 RELEASE_FILE = "/etc/aegis-probe-release"
-RELEASE = "aegis-openshell-probe 1"
+RELEASE = "aegis-openshell-probe 2"
 
 type DetailValue = str | int | None
 

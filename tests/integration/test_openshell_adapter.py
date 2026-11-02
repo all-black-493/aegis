@@ -255,3 +255,29 @@ def test_the_workspace_is_created_only_when_missing(fake: FakeOpenShell) -> None
     assert runtime.ensure_workspace() is True
     assert runtime.ensure_workspace() is False
     assert fake.state["workspaces"] == ["default", "aegis"]
+
+
+def test_enforcement_records_are_read_from_the_unfiltered_sandbox_log(
+    fake: FakeOpenShell, policy: Path
+) -> None:
+    fake.update(
+        logs="[1.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/bash(0)"
+        " -> 192.0.2.1:443 [reason:transparent_tcp_policy_denied]\n"
+        "[1.1] [sandbox] [INFO ] started\n"
+    )
+    runtime = fake.runtime()
+    runtime.create(_spec(policy))
+
+    [record] = runtime.records("aegis-test-1")
+
+    assert (record.category, record.action) == ("NET:OPEN", "DENIED")
+    [call] = [c["argv"] for c in fake.calls() if "logs" in c["argv"]]
+    assert call[call.index("logs") :] == [
+        "logs",
+        "aegis-test-1",
+        "--source",
+        "sandbox",
+        "-n",
+        "2000",
+    ]
+    assert "--level" not in call

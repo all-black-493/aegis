@@ -76,6 +76,8 @@ def openshell(state, args):
         if state["status_exit"]:
             fail("failed to connect to the gateway", state["status_exit"])
         print(json.dumps({"status": state["status"], "version": state["gateway_version"]}))
+    elif args[:1] == ["logs"]:
+        print(state["logs"])
     elif command == ["workspace", "get"]:
         if rest[0] not in state["workspaces"]:
             fail("code: 'Some requested entity was not found', message: \"workspace not found\"")
@@ -90,6 +92,9 @@ def openshell(state, args):
         fail("code: 'Some requested entity was not found', message: \"no global policy\n"
              "  │ revision found\"")
     elif command == ["sandbox", "create"]:
+        if len(option(rest, "--name")) > 19:
+            fail("code: 'Client specified an invalid argument',"
+                 " message: \"name exceeds maximum length\"")
         if state["create_exit"] or not Path(option(rest, "--policy")).is_file():
             fail("the sandbox was rejected")
         labels = dict(
@@ -179,6 +184,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "effective_policy": None,
     "verdict_sequence": [],
     "proven": [],
+    "logs": "",
     "verdict": {
         "result": "within_boundary",
         "exit_code": 0,

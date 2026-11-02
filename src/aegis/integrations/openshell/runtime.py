@@ -1,18 +1,24 @@
 import contextlib
-import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from types import MappingProxyType
-from typing import Any
 
 from aegis.config.settings import OpenShellSettings
 from aegis.integrations.openshell.cli import VERIFIED_VERSION, Completed, OpenShellCli
+from aegis.integrations.openshell.parsing import (
+    admission_state,
+    error_message,
+    json_object,
+    not_found,
+    parse_records,
+    parse_sandbox,
+    parse_verdict,
+)
 from aegis.runtime.contract import (
     MANAGED_LABEL,
     MAX_EXEC_OUTPUT_BYTES,
+    EnforcementRecord,
     ExecResult,
-    ProverResult,
     ProverVerdict,
     RuntimeProtocolError,
     RuntimeRefusedError,
@@ -30,9 +36,9 @@ CREATE_TIMEOUT_SECONDS = 300
 EXEC_GRACE_SECONDS = 30
 DELETE_WAIT_SECONDS = 60
 PROVER_TIMEOUT_SECONDS = 10
+LOG_LINES = 2000
 MAX_JSON_BYTES = 1024 * 1024
 MAX_POLICY_BYTES = 256 * 1024
-MAX_COUNTEREXAMPLE_CHARS = 1024
 # The sandbox's canonical main process only keeps it alive; AEGIS runs its work through exec.
 IDLE_COMMAND = ("/usr/bin/sleep", "infinity")
 # sandbox exec reports its own --timeout with this exit status (ADR-0016).
@@ -104,8 +110,8 @@ class OpenShellRuntime:
         if completed.exit_code != 0:
             self._discard(spec.name)
             raise RuntimeRefusedError("OpenShell refused the sandbox", code="sandbox_rejected")
-        sandbox = parse_sandbox(_json(completed))
-        if not sandbox.ready or _admission(completed) != "accepted":
+        sandbox = parse_sandbox(json_object(completed))
+        if not sandbox.ready or admission_state(completed) != "accepted":
             self._discard(spec.name)
             raise RuntimeRefusedError("the sandbox did not become ready", code="sandbox_not_ready")
         return sandbox
@@ -113,10 +119,10 @@ class OpenShellRuntime:
     def get(self, name: str) -> Sandbox | None:
         completed = self._run(("sandbox", "get"), [check_sandbox_name(name), "--output", "json"])
         if completed.exit_code != 0:
-            if _not_found(completed):
+            if not_found(completed):
                 return None
             raise RuntimeUnavailableError("the sandbox could not be read")
-        return parse_sandbox(_json(completed))
+        return parse_sandbox(json_object(completed))
 
     def exec(self, name: str, argv: Sequence[str], timeout_seconds: int) -> ExecResult:
         check_exec(argv, timeout_seconds)
@@ -180,7 +186,7 @@ class OpenShellRuntime:
             completed = self._run(("sandbox", "list"), [*args, "--page-token", token])
             if completed.exit_code != 0:
                 raise RuntimeUnavailableError("sandboxes could not be listed")
-            page = _json(completed)
+            page = json_object(completed)
             entries = page.get("sandboxes")
             if not isinstance(entries, list):
                 raise RuntimeProtocolError("the sandbox list is malformed")
@@ -192,6 +198,14 @@ class OpenShellRuntime:
             if not token:
                 return tuple(found)
 
+    def records(self, name: str) -> tuple[EnforcementRecord, ...]:
+        # All levels: filtering with --level warn would hide policy events (ADR-0018).
+        args = [check_sandbox_name(name), "--source", "sandbox", "-n", str(LOG_LINES)]
+        completed = self._run(("logs",), args)
+        if completed.exit_code != 0:
+            raise RuntimeUnavailableError("the sandbox log could not be read")
+        return parse_records(completed.stdout)
+
     def check_policy(self, candidate: Path, boundary: Path) -> ProverVerdict:
         if self._cli.prover_version() != f"openshell-prover {VERIFIED_VERSION}":
             raise RuntimeRefusedError(
@@ -200,7 +214,7 @@ class OpenShellRuntime:
         completed = self._cli.prove(candidate, boundary, timeout_seconds=PROVER_TIMEOUT_SECONDS)
         if completed.timed_out:
             raise RuntimeUnavailableError("the prover did not finish", code="prover_stalled")
-        return parse_verdict(_json(completed), completed.exit_code)
+        return parse_verdict(json_object(completed), completed.exit_code)
 
     def _verify(self) -> None:
         if self._cli.version() != f"openshell {VERIFIED_VERSION}":
@@ -214,7 +228,7 @@ class OpenShellRuntime:
         completed = self._run(("status",), ["--output", "json"])
         if completed.exit_code != 0:
             raise RuntimeUnavailableError("the gateway could not be reached", code="unreachable")
-        status = _json(completed)
+        status = json_object(completed)
         # An unknown gateway name also exits 0, reporting not_configured (ADR-0016).
         if status.get("status") != "connected":
             raise RuntimeUnavailableError("the gateway is not connected", code="not_connected")
@@ -228,7 +242,7 @@ class OpenShellRuntime:
         completed = self._run(("policy", "get"), ["--global"])
         if completed.exit_code == 0:
             return True
-        if "no global policy revision found" in _message(completed):
+        if "no global policy revision found" in error_message(completed):
             return False
         raise RuntimeUnavailableError("the global policy could not be read")
 
@@ -255,78 +269,3 @@ def is_managed(sandbox: Sandbox) -> bool:
     except ValueError:
         return False
     return sandbox.labels.get(MANAGED_LABEL) == "true"
-
-
-def parse_sandbox(value: object) -> Sandbox:
-    if not isinstance(value, Mapping):
-        raise RuntimeProtocolError("a sandbox record is malformed")
-    name, sandbox_id, phase = value.get("name"), value.get("id"), value.get("phase")
-    labels = value.get("labels") or {}
-    admission = value.get("configuration_admission") or {}
-    if not all(isinstance(item, str) and item for item in (name, sandbox_id, phase)):
-        raise RuntimeProtocolError("a sandbox record is malformed")
-    if not isinstance(labels, Mapping) or not isinstance(admission, Mapping):
-        raise RuntimeProtocolError("a sandbox record is malformed")
-    policy_hash = admission.get("policy_hash")
-    return Sandbox(
-        name=str(name),
-        sandbox_id=str(sandbox_id),
-        phase=str(phase),
-        policy_hash=policy_hash if isinstance(policy_hash, str) and policy_hash else None,
-        labels=MappingProxyType({str(k): str(v) for k, v in labels.items()}),
-    )
-
-
-def parse_verdict(value: Mapping[str, Any], exit_code: int) -> ProverVerdict:
-    if value.get("schema_version") != 1 or value.get("prover_version") != VERIFIED_VERSION:
-        raise RuntimeRefusedError(
-            "the prover output is not the verified schema", code="version_mismatch"
-        )
-    try:
-        result = ProverResult(str(value.get("result")))
-    except ValueError:
-        raise RuntimeProtocolError("the prover reported an unknown result") from None
-    if value.get("exit_code") != exit_code:
-        raise RuntimeProtocolError("the prover's result and exit status disagree")
-    coverage = value.get("coverage")
-    domains = coverage.get("domains") if isinstance(coverage, Mapping) else None
-    if not isinstance(domains, list) or not all(isinstance(d, str) for d in domains):
-        raise RuntimeProtocolError("the prover coverage is malformed")
-    reason_code = value.get("reason_code")
-    counterexample = value.get("counterexample")
-    return ProverVerdict(
-        result=result,
-        domains=frozenset(domains),
-        reason_code=reason_code if isinstance(reason_code, str) else None,
-        counterexample=(
-            json.dumps(counterexample, sort_keys=True)[:MAX_COUNTEREXAMPLE_CHARS]
-            if counterexample is not None
-            else None
-        ),
-    )
-
-
-def _json(completed: Completed) -> dict[str, Any]:
-    if completed.truncated:
-        raise RuntimeProtocolError("OpenShell's output exceeded its size limit")
-    try:
-        value = json.loads(completed.stdout)
-    except ValueError:
-        raise RuntimeProtocolError("OpenShell's output is not JSON") from None
-    if not isinstance(value, dict):
-        raise RuntimeProtocolError("OpenShell's output is not a JSON object")
-    return value
-
-
-def _admission(completed: Completed) -> object:
-    admission = _json(completed).get("configuration_admission")
-    return admission.get("state") if isinstance(admission, Mapping) else None
-
-
-def _not_found(completed: Completed) -> bool:
-    return "not found" in _message(completed)
-
-
-def _message(completed: Completed) -> str:
-    # The CLI wraps errors at 80 columns inside a box border (ADR-0016).
-    return " ".join(completed.stderr.replace("\u2502", " ").split())

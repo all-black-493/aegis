@@ -11,7 +11,7 @@ AEGIS has implemented **Phase 0** (the local development foundation), **Phase 1*
 - task, decision and history storage whose integrity rules the database enforces;
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
 - the model provider contract, a deterministic, offline mock provider and an adapter for a local Ollama server, used by `generate` tasks;
-- the sandbox runtime contract, a version-pinned NVIDIA OpenShell adapter, AEGIS's sandbox policies and probe image, and the prover gate that admits a sandbox only after its policy is proven within the boundary (no task uses them yet);
+- the sandbox runtime contract, a version-pinned NVIDIA OpenShell adapter, AEGIS's sandbox policies and probe image, the prover gate that admits a sandbox only after its policy is proven within the boundary, and enforcement probes that verify the sandbox's filesystem, process and network restrictions independently (no task uses them yet);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling, including a security suite and an end-to-end test;
@@ -290,7 +290,7 @@ Notes:
 
 ## NVIDIA OpenShell (optional)
 
-OpenShell is the runtime enforcement boundary for AEGIS workloads from Phase 3 on. So far AEGIS has the adapter, its sandbox policies, the probe image and the prover gate (ADR-0016, ADR-0017); nothing in AEGIS runs in a sandbox yet. CI never uses a real OpenShell.
+OpenShell is the runtime enforcement boundary for AEGIS workloads from Phase 3 on. So far AEGIS has the adapter, its sandbox policies, the probe image, the prover gate and the enforcement probes (ADR-0016 to ADR-0018); no task runs in a sandbox yet. CI never uses a real OpenShell.
 
 1. Install NVIDIA OpenShell **0.1.6** (AEGIS refuses every other version) and start its gateway, for example the Debian package's `openshell-gateway.service` user unit. `openshell status` must report `connected`.
 2. Run `make openshell-init`. It creates the `aegis` workspace on the gateway (`AEGIS_OPENSHELL_WORKSPACE`) if it is missing, and checks the CLI, prover and gateway versions and that no global policy is active.
@@ -302,6 +302,7 @@ Notes:
 - **What AEGIS may do on the gateway:** only the commands listed in ADR-0016, only in its own workspace, and only to sandboxes named `aegis-*` and labelled `aegis.managed=true`. It never sets a global policy, attaches providers or changes a running sandbox's policy.
 - **Shared gateway:** on a local gateway without OIDC roles, the CLI identity is a Platform Admin. AEGIS restricts itself in code; the workspace is a scope, not an access boundary.
 - **Policies and the gate:** AEGIS's sandbox policies are in `deploy/openshell/` and fingerprinted. Before a sandbox is used, the prover must show its submitted and its effective policy within `boundary.yaml`, and the image must carry AEGIS's release marker. The sandbox is always deleted afterwards, and both events are audited (`sandbox.created`, `sandbox.deleted`).
+- **Enforcement probes:** a run starts a canary on the default Docker bridge, `172.17.0.1`, ports 18901 and 18902. The ports must be free and `docker0` must have that address. It opens a gated sandbox and runs 16 fixed probes, one exec each: filesystem, process and network restrictions, plus positive controls. AEGIS judges each one from the command's result and what the canary received, and reports `verified`, `violated` or `inconclusive`. OpenShell's own denial records are reported beside AEGIS's evidence as corroboration (ADR-0018).
 - **Orphans:** when a worker starts with `AEGIS_SANDBOX_RUNTIME=openshell`, it deletes AEGIS's sandboxes whose job is no longer running. A worker started during `make test-openshell` would also delete the tests' sandboxes.
 - **No downloads:** the image is built from the local `ubuntu:24.04`, and the tests fail with a hint if it is missing.
 - **Upgrades:** a new OpenShell release must be re-verified before AEGIS accepts it (ADR-0016). Consider `sudo apt-mark hold openshell`.
@@ -361,10 +362,11 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
     - remote, swapped, missing or misreporting models never receive the prompt;
     - a tool call or a stream that ends early stores nothing;
     - an endless stream is cut to the output limit.
+  - the enforcement probes, through the gate and the adapter against a fake `openshell` CLI: a sandbox that claims a refusal the canary saw through is a violation, a write that succeeded is a violation, OpenShell's records alone never verify a run, and a refused or failing run runs no probe or still deletes its sandbox and stops the canary;
   - the sandbox gate, against a fake `openshell` CLI: a submitted policy that is not proven (exceeding, unsupported, inconclusive, an error or partial coverage) creates nothing; an effective policy widened by a provider is proven as enforced, refused and deleted; a global policy stops the gate; an unrecognised image is deleted unused; orphan cleanup never touches other sandboxes;
   - the sandbox runtime boundary, against a fake `openshell` CLI: no AEGIS secret or `OPENSHELL_*` override reaches the CLI, only allow-listed commands run in AEGIS's workspace, other sandboxes are never listed or deleted, an unverified or unreachable runtime creates nothing, and a disabled runtime starts no process.
-- **OpenShell tests** (marked `openshell`, run only by `make test-openshell`) check the real gateway: the verified version, a sandbox's lifecycle and user, exec timeouts, the effective policy against its boundary through the prover, and the prover's refusals. They also build the probe image offline, open the gate with AEGIS's real policies (UID and GID 2000, audited creation and deletion), and show that the real prover stops `best_effort` Landlock, a root user or a widened path before any sandbox is created. `make test-integration` and CI deselect them.
-- **Shared test code** (`tests/fixtures`): the fake Ollama server, the fake `openshell` and `openshell-prover`, test-only OpenShell policies, and the helpers that start and stop real processes.
+- **OpenShell tests** (marked `openshell`, run only by `make test-openshell`) check the real gateway: the verified version, a sandbox's lifecycle and user, exec timeouts, the effective policy against its boundary through the prover, and the prover's refusals. They also build the probe image with `make openshell-image`, open the gate with AEGIS's real policies (UID and GID 2000, audited creation and deletion), and show that the real prover stops `best_effort` Landlock, a root user or a widened path before any sandbox is created. They then run the enforcement probes, which must report `verified` with every network refusal corroborated by OpenShell, and run them under a deliberately widened policy, which must report the two gaps as `violated`. `make test-integration` and CI deselect them.
+- **Shared test code** (`tests/fixtures`): the shared callers, audit recorder and worker settings (`services`); record queries (`records`); the fake Ollama server; the fake `openshell` and `openshell-prover`; an in-process fake runtime; probe answers; test-only OpenShell policies; and the helpers that start processes and find free ports. `tests/conftest.py` provides the database fixtures and `operator`, and `tests/integration/conftest.py` the live OpenShell runtime and probe image.
 
 Integration, end-to-end and security tests fail, never skip, when PostgreSQL or the settings are missing. They share the `<AEGIS_POSTGRES_DB>_test` database, recreated for each run; one security test also recreates `<AEGIS_POSTGRES_DB>_outdated_test`. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 

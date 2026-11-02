@@ -27,6 +27,7 @@ ALLOWED_COMMANDS = frozenset(
         ("sandbox", "exec"),
         ("sandbox", "delete"),
         ("policy", "get"),
+        ("logs",),
     }
 )
 KILL_GRACE_SECONDS = 5

@@ -1,13 +1,28 @@
 # The most any AEGIS sandbox may be granted (ADR-0017). The prover checks every sandbox's
 # submitted and effective policy against this file. Any change here changes the sandbox policy
-# fingerprint, which a test pins.
+# fingerprint, which a test pins. /var/log is a baseline path OpenShell adds to any sandbox with
+# a network rule.
 version: 1
 filesystem_policy:
   include_workdir: false
-  read_only: [/usr, /lib, /etc, /proc, /dev/urandom]
+  read_only: [/usr, /lib, /etc, /proc, /dev/urandom, /var/log, /srv/aegis/readonly]
   read_write: [/tmp, /dev/null]
 landlock:
   compatibility: hard_requirement
 process:
   run_as_user: "2000"
   run_as_group: "2000"
+network_policies:
+  canary:
+    name: canary
+    endpoints:
+      - host: 172.17.0.1
+        port: 18901
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: /probe/**
+    binaries:
+      - path: /usr/bin/bash

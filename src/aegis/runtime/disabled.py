@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from aegis.runtime.contract import (
+    EnforcementRecord,
     ExecResult,
     ProverVerdict,
     RuntimeRefusedError,
@@ -36,6 +37,9 @@ class DisabledRuntime:
         return ()
 
     def check_policy(self, candidate: Path, boundary: Path) -> ProverVerdict:
+        raise _refused()
+
+    def records(self, name: str) -> tuple[EnforcementRecord, ...]:
         raise _refused()
 
 

@@ -89,7 +89,7 @@ def test_an_effective_policy_widened_by_a_provider_is_refused_and_deleted(
 
     assert refused.value.code == "effective_policy_refused"
     submitted, effective = fake.state["proven"]
-    assert "network_policies" not in submitted
+    assert "api.github.com" not in submitted
     assert effective == WIDENED + "\n"
     assert fake.state["sandboxes"] == {}
     assert [(e.kind, e.reason) for e in events] == [(SandboxEventKind.DELETED, "refused")]

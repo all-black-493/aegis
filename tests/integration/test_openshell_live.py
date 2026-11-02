@@ -1,4 +1,3 @@
-import os
 import re
 import subprocess
 from collections.abc import Iterator
@@ -7,7 +6,6 @@ from uuid import uuid4
 
 import pytest
 
-from aegis.config.settings import load_runtime_settings
 from aegis.integrations.openshell.cli import VERIFIED_VERSION
 from aegis.integrations.openshell.runtime import OpenShellRuntime
 from aegis.runtime.contract import ProverResult, SandboxSpec
@@ -19,20 +17,13 @@ IMAGE = "ubuntu:24.04"
 
 
 @pytest.fixture(scope="module")
-def runtime() -> OpenShellRuntime:
-    runtime = OpenShellRuntime(load_runtime_settings(os.environ).openshell)
-    status = runtime.check()
-    if not status.healthy:
-        pytest.fail(
-            f"OpenShell is not usable ({status.detail}): install OpenShell {VERIFIED_VERSION}"
-            " and run `make openshell-init`; see the getting-started guide"
-        )
+def runtime(openshell_runtime: OpenShellRuntime) -> OpenShellRuntime:
     present = subprocess.run(
         ["docker", "image", "inspect", IMAGE], capture_output=True, check=False
     )
     if present.returncode != 0:
         pytest.fail(f"{IMAGE} is not present locally, and these tests never pull images")
-    return runtime
+    return openshell_runtime
 
 
 @pytest.fixture

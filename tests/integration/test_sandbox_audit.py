@@ -41,7 +41,7 @@ def _events(owner_engine: Engine, name: str) -> list[dict[str, Any]]:
 def test_an_admitted_sandbox_is_audited_from_creation_to_deletion(
     app_engine: Engine, owner_engine: Engine, fake: FakeOpenShell
 ) -> None:
-    name = f"aegis-audit-{uuid4().hex[:8]}"
+    name = f"aegis-audit-{uuid4().hex[:7]}"
     gate = SandboxGate(fake.runtime(), load_policies(), IMAGE, audit_sink(app_engine, RECORDER))
 
     with gate.open(name, {"aegis.purpose": "test"}):

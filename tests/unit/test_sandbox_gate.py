@@ -1,87 +1,46 @@
 import re
 import shutil
-from collections.abc import Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 
 import pytest
 
 from aegis.runtime.contract import (
-    REQUIRED_PROVER_DOMAINS,
-    ExecResult,
     ProverResult,
     ProverVerdict,
     RuntimeRefusedError,
     RuntimeStatus,
     RuntimeUnavailableError,
     Sandbox,
-    SandboxSpec,
 )
 from aegis.runtime.gate import (
     POLICY_DIR,
-    RELEASE,
     SandboxEvent,
     SandboxEventKind,
     SandboxGate,
     clean_orphans,
     load_policies,
 )
+from aegis.runtime.probes.catalog import CANARY_BINARY, CANARY_HOST, CANARY_PORT
+from tests.fixtures.fake_runtime import PASS, FakeRuntime
 
-PINNED_VERSION = "2026.11.02-1"
-PINNED_FINGERPRINT = "4a1b151f93f5322f94f7531ac66e3ea5f59d196a32cea278c377a1eeb89b4f66"
+PINNED_VERSION = "2026.11.02-2"
+PINNED_FINGERPRINT = "84ddf73966fd31261111b65ddea408152cf95caa1f6d4f1438d462ca6df3917e"
 IMAGE = "sha256:" + "a" * 64
-PASS = ProverVerdict(ProverResult.WITHIN_BOUNDARY, frozenset(REQUIRED_PROVER_DOMAINS))
-
-
-@dataclass
-class FakeRuntime:
-    # An in-process runtime: every call is recorded, and each answer can be scripted.
-    status: RuntimeStatus = field(default_factory=lambda: RuntimeStatus(True, "ok", "0.1.6"))
-    verdicts: list[ProverVerdict] = field(default_factory=lambda: [PASS, PASS])
-    effective: str = "version: 1\n"
-    release: str = RELEASE + "\n"
-    delete_error: Exception | None = None
-    calls: list[str] = field(default_factory=list)
-    specs: list[SandboxSpec] = field(default_factory=list)
-    live: dict[str, Sandbox] = field(default_factory=dict)
-    checked: list[str] = field(default_factory=list)
-
-    def check(self) -> RuntimeStatus:
-        self.calls.append("check")
-        return self.status
-
-    def create(self, spec: SandboxSpec) -> Sandbox:
-        self.calls.append("create")
-        self.specs.append(spec)
-        labels = MappingProxyType({**spec.labels, "aegis.managed": "true"})
-        self.live[spec.name] = Sandbox(spec.name, "id-1", "Ready", "ab" * 32, labels)
-        return self.live[spec.name]
-
-    def get(self, name: str) -> Sandbox | None:
-        return self.live.get(name)
-
-    def exec(self, name: str, argv: Sequence[str], timeout_seconds: int) -> ExecResult:
-        self.calls.append("exec " + " ".join(argv))
-        return ExecResult(0, self.release, "")
-
-    def effective_policy(self, name: str) -> str:
-        self.calls.append("effective_policy")
-        return self.effective
-
-    def delete(self, name: str) -> None:
-        self.calls.append("delete")
-        if self.delete_error is not None:
-            raise self.delete_error
-        self.live.pop(name, None)
-
-    def managed(self) -> tuple[Sandbox, ...]:
-        return tuple(self.live.values())
-
-    def check_policy(self, candidate: Path, boundary: Path) -> ProverVerdict:
-        self.calls.append("check_policy")
-        self.checked.append(candidate.read_text())
-        return self.verdicts.pop(0)
+# The only network access a sandbox gets, built from the probe catalog's own constants.
+CANARY_RULE = f"""  canary:
+    name: canary
+    endpoints:
+      - host: {CANARY_HOST}
+        port: {CANARY_PORT}
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: /probe/**
+    binaries:
+      - path: {CANARY_BINARY}
+"""
 
 
 @pytest.fixture
@@ -102,14 +61,15 @@ def test_the_sandbox_policies_are_pinned() -> None:
 
 
 @pytest.mark.parametrize("name", ["boundary.yaml", "probe.yaml"])
-def test_the_policies_require_landlock_a_non_root_user_and_no_network(name: str) -> None:
+def test_the_policies_require_landlock_a_non_root_user_and_only_the_canary(name: str) -> None:
     text = (POLICY_DIR / name).read_text()
+    network = text.split("network_policies:\n", 1)[1]
 
     assert "compatibility: hard_requirement" in text
     assert 'run_as_user: "2000"' in text
     assert 'run_as_group: "2000"' in text
-    assert "network_policies" not in text
     assert "include_workdir: false" in text
+    assert network == CANARY_RULE
 
 
 def test_the_probe_image_is_built_offline_from_a_pinned_base_as_a_non_root_user() -> None:
