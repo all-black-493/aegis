@@ -19,5 +19,27 @@ services:
       retries: 12
       start_period: 10s
 
+  ollama:
+    # Ollama 0.34.2, the version the adapter was verified against (ADR-0014).
+    image: ollama/ollama@sha256:da6e0dc5651df159e45686fd663c4dbe1624a52c44d7280eeac1551d8f865532
+    profiles: [local-ai]
+    ports:
+      - "127.0.0.1:${AEGIS_OLLAMA_PORT:-11436}:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
 volumes:
   postgres-data:
+  ollama-models:

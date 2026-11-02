@@ -6,7 +6,10 @@ from typing import Any
 
 import pytest
 
+from aegis.config.settings import DEFAULT_OLLAMA_PORT
+
 ROOT = Path(__file__).resolve().parents[2]
+OLLAMA_IMAGE_DIGEST = "da6e0dc5651df159e45686fd663c4dbe1624a52c44d7280eeac1551d8f865532"
 SETTINGS = {
     "AEGIS_POSTGRES_USER": "compose_test",
     "AEGIS_POSTGRES_DB": "compose_test",
@@ -15,7 +18,9 @@ SETTINGS = {
 }
 
 
-def _compose_config(tmp_path: Path, settings: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _compose_config(
+    tmp_path: Path, settings: dict[str, str], *profiles: str
+) -> subprocess.CompletedProcess[str]:
     env_file = tmp_path / "compose.env"
     env_file.write_text("".join(f"{key}={value}\n" for key, value in settings.items()))
     environment = {k: v for k, v in os.environ.items() if not k.startswith("AEGIS_")}
@@ -27,6 +32,7 @@ def _compose_config(tmp_path: Path, settings: dict[str, str]) -> subprocess.Comp
             str(ROOT / "docker-compose.yml"),
             "--env-file",
             str(env_file),
+            *(arg for profile in profiles for arg in ("--profile", profile)),
             "config",
             "--format",
             "json",
@@ -92,3 +98,53 @@ def test_missing_or_empty_setting_is_rejected(tmp_path: Path, key: str, value: s
 
     assert result.returncode != 0
     assert key in result.stderr
+
+
+def _ollama(tmp_path: Path, settings: dict[str, str]) -> dict[str, Any]:
+    result = _compose_config(tmp_path, settings, "local-ai")
+    assert result.returncode == 0, result.stderr
+    services: dict[str, Any] = json.loads(result.stdout)["services"]
+    assert sorted(services) == ["ollama", "postgres"]
+    ollama: dict[str, Any] = services["ollama"]
+    return ollama
+
+
+def test_ollama_runs_only_with_the_local_ai_profile(tmp_path: Path) -> None:
+    ollama = _ollama(tmp_path, SETTINGS)
+
+    assert ollama["profiles"] == ["local-ai"]
+
+
+def test_ollama_is_pinned_to_the_verified_image(tmp_path: Path) -> None:
+    ollama = _ollama(tmp_path, SETTINGS)
+
+    assert ollama["image"] == f"ollama/ollama@sha256:{OLLAMA_IMAGE_DIGEST}"
+
+
+@pytest.mark.parametrize(
+    ("configured", "published"), [(None, str(DEFAULT_OLLAMA_PORT)), ("11500", "11500")]
+)
+def test_ollama_is_published_on_loopback_only(
+    tmp_path: Path, configured: str | None, published: str
+) -> None:
+    settings = SETTINGS if configured is None else {**SETTINGS, "AEGIS_OLLAMA_PORT": configured}
+
+    [port] = _ollama(tmp_path, settings)["ports"]
+
+    assert (port["host_ip"], port["published"], port["target"]) == ("127.0.0.1", published, 11434)
+
+
+def test_ollama_runs_hardened_with_models_on_its_own_volume(tmp_path: Path) -> None:
+    ollama = _ollama(tmp_path, SETTINGS)
+
+    [volume] = ollama["volumes"]
+    assert (volume["type"], volume["source"], volume["target"]) == (
+        "volume",
+        "ollama-models",
+        "/root/.ollama",
+    )
+    assert ollama["read_only"] is True
+    assert ollama["cap_drop"] == ["ALL"]
+    assert ollama["security_opt"] == ["no-new-privileges:true"]
+    assert ollama["tmpfs"] == ["/tmp"]  # noqa: S108 (the container's private tmpfs)
+    assert ollama["healthcheck"]["test"] == ["CMD", "ollama", "list"]

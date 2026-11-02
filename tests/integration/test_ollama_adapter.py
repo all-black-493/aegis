@@ -11,7 +11,12 @@ from typing import Any
 import pytest
 
 from aegis.config.settings import OllamaSettings
-from aegis.integrations.ollama.provider import MAX_LINE_BYTES, MAX_STREAM_BYTES, OllamaProvider
+from aegis.integrations.ollama.provider import (
+    MAX_LINE_BYTES,
+    MAX_STREAM_BYTES,
+    OllamaProvider,
+    pull_model,
+)
 from aegis.model_providers.contract import (
     MAX_OUTPUT_BYTES,
     FinishReason,
@@ -57,6 +62,15 @@ class FakeOllama:
     tags_extra: dict[str, Any] = field(default_factory=dict)
     status: dict[str, int] = field(default_factory=dict)
     lines: list[bytes] = field(default_factory=lambda: [_content("Red."), _done()])
+    pull_lines: list[bytes] = field(
+        default_factory=lambda: [
+            _line(status="pulling manifest"),
+            _line(status="pulling 7f4030143c1c", total=100, completed=50),
+            _line(status="pulling 7f4030143c1c", total=100, completed=100),
+            _line(status="verifying sha256 digest"),
+            _line(status="success"),
+        ]
+    )
     delay: float = 0
     requests: list[dict[str, Any]] = field(default_factory=list)
     disconnected: threading.Event = field(default_factory=threading.Event)
@@ -93,6 +107,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, show)
             return
         fake.requests.append(body)
+        lines = fake.pull_lines if self.path == "/api/pull" else fake.lines
         if fake.status.get(self.path, 200) != 200:
             self._json(fake.status[self.path], {"error": "refused"})
             return
@@ -101,7 +116,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         try:
-            for line in fake.lines:
+            for line in lines:
                 if fake.delay:
                     time.sleep(fake.delay)
                 self.wfile.write(f"{len(line):x}\r\n".encode() + line + b"\r\n")
@@ -360,3 +375,48 @@ def test_prompts_and_outputs_never_reach_logs_or_errors(
     for marker in (PROMPT_MARKER, OUTPUT_MARKER):
         assert marker not in caplog.text
         assert marker not in str(refused.value)
+
+
+def test_a_pull_reports_each_new_status_once(fake: FakeOllama, port: int) -> None:
+    fake.pull_lines.insert(1, _line(status="pulling \x1b[31mlayer\x07"))
+    reported: list[str] = []
+
+    pull_model(OllamaSettings(port, MODEL, None), reported.append)
+
+    assert reported == [
+        "pulling manifest",
+        "pulling [31mlayer",
+        "pulling 7f4030143c1c",
+        "verifying sha256 digest",
+        "success",
+    ]
+    assert fake.requests == [{"model": MODEL, "stream": True}]
+
+
+@pytest.mark.parametrize(
+    ("lines", "error", "code"),
+    [
+        (
+            [_line(status="pulling manifest"), _line(error="file does not exist")],
+            ModelUnavailableError,
+            "pull_failed",
+        ),
+        ([_line(status="pulling manifest")], ProviderUnavailableError, "unavailable"),
+    ],
+)
+def test_a_failed_pull_is_reported(
+    fake: FakeOllama, port: int, lines: list[bytes], error: type[ModelProviderError], code: str
+) -> None:
+    fake.pull_lines = lines
+
+    with pytest.raises(error) as refused:
+        pull_model(OllamaSettings(port, MODEL, None), lambda _status: None)
+
+    assert refused.value.code == code
+
+
+def test_pulling_from_an_unreachable_server_is_retryable() -> None:
+    with pytest.raises(ProviderUnavailableError) as refused:
+        pull_model(OllamaSettings(_closed_port(), MODEL, None), lambda _status: None)
+
+    assert refused.value.code == "unreachable"

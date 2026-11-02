@@ -2,7 +2,7 @@ import http.client
 import json
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +24,8 @@ from aegis.model_providers.contract import (
 )
 
 PROVIDER = "ollama"
+VERIFIED_VERSION = "0.34.2"
+PULL_READ_TIMEOUT_SECONDS = 300
 METADATA_TIMEOUT_SECONDS = 10
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_LINE_BYTES = 64 * 1024
@@ -135,6 +137,39 @@ class OllamaProvider:
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ProviderProtocolError("a model server response exceeded its size limit")
         return _object(raw)
+
+
+def pull_model(settings: OllamaSettings, report: Callable[[str], None]) -> None:
+    # Administration only: the worker never pulls. Ollama reports failures inside the stream.
+    connection = http.client.HTTPConnection(
+        MODEL_HOST, settings.port, timeout=PULL_READ_TIMEOUT_SECONDS
+    )
+    try:
+        response = _send(connection, "POST", "/api/pull", {"model": settings.model, "stream": True})
+        last = None
+        while True:
+            line = response.readline(MAX_LINE_BYTES + 1)
+            if not line:
+                raise ProviderUnavailableError("the pull ended before it succeeded")
+            if len(line) > MAX_LINE_BYTES:
+                raise ProviderProtocolError("the pull stream exceeded its size limits")
+            if not line.strip():
+                continue
+            update = _object(line)
+            if "error" in update:
+                raise ModelUnavailableError("Ollama could not pull the model", code="pull_failed")
+            status = update.get("status")
+            if isinstance(status, str) and status != last:
+                last = status
+                report("".join(c for c in status[:80] if c.isprintable()))
+            if status == "success":
+                return
+    except (OSError, http.client.HTTPException):
+        raise ProviderUnavailableError(
+            "the model server could not be reached", code="unreachable"
+        ) from None
+    finally:
+        connection.close()
 
 
 class ChatStream:

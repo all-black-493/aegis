@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from aegis.config.settings import ModelProviderKind, ModelSettings
 from aegis.config.variables import TEMPLATE_NAMES
 from aegis.db.migrate import head_revision
 from aegis.doctor.__main__ import main
@@ -12,8 +13,16 @@ from aegis.doctor.checks import GIB, run_checks
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
 from aegis.doctor.report import REDACTED, render
 from aegis.doctor.system import CommandResult, Memory
+from aegis.model_providers.contract import ModelIdentity, ProviderStatus
 
 PASSWORD = "0123456789abcdef0123456789abcdef"
+MODEL_DIGEST = "7df6b6e09427a769808717c0a93cadc4ae99ed4eb8bf5ca557c90846becea435"
+HEALTHY_MODEL = ProviderStatus(
+    healthy=True,
+    detail="ok",
+    identity=ModelIdentity("ollama", "qwen3:0.6b", MODEL_DIGEST, "0.34.2"),
+)
+OLLAMA = {"AEGIS_MODEL_PROVIDER": "ollama", "AEGIS_OLLAMA_MODEL": "qwen3:0.6b"}
 UV_VERSION = ("uv", "--version")
 DOCKER_INFO = ("docker", "info", "--format", "{{json .}}")
 COMPOSE_VERSION = ("docker", "compose", "version", "--short")
@@ -67,6 +76,8 @@ class FakeSystem:
     mem: Memory | None = field(default_factory=lambda: Memory(16 * GIB, 8 * GIB))
     port_free: bool = False
     accepts_connections: bool = True
+    model: ProviderStatus = field(default_factory=lambda: HEALTHY_MODEL)
+    model_settings: list[ModelSettings] = field(default_factory=list)
 
     def python_version(self) -> tuple[int, int, int]:
         return self.version
@@ -91,6 +102,10 @@ class FakeSystem:
 
     def can_connect(self, host: str, port: int) -> bool:
         return self.accepts_connections
+
+    def model_status(self, settings: ModelSettings) -> ProviderStatus:
+        self.model_settings.append(settings)
+        return self.model
 
 
 def write_env(root: Path, **overrides: str | None) -> None:
@@ -511,3 +526,74 @@ def test_main_refuses_to_run_outside_repository_root(
 
     assert main() == 2
     assert "repository root" in capsys.readouterr().err
+
+
+def test_the_mock_provider_needs_no_model_server(system: FakeSystem, root: Path) -> None:
+    check = result(run_checks(system, root), "Model provider")
+
+    assert (check.requirement, check.status) == (Requirement.OPTIONAL, Status.PASS)
+    assert "mock" in check.detail
+    assert system.model_settings == []
+
+
+def test_a_configured_ollama_model_is_required_and_identified(
+    system: FakeSystem, root: Path
+) -> None:
+    write_env(root, **OLLAMA)
+
+    diagnosis = run_checks(system, root)
+
+    check = result(diagnosis, "Model provider")
+    assert (check.requirement, check.status) == (Requirement.REQUIRED, Status.PASS)
+    assert check.detail == "qwen3:0.6b (7df6b6e09427) on Ollama 0.34.2"
+    [settings] = system.model_settings
+    assert settings.provider is ModelProviderKind.OLLAMA
+    assert diagnosis.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    ("detail", "hint"),
+    [
+        ("unreachable", "make up-local-ai"),
+        ("model_missing", "make model-pull"),
+        ("digest_mismatch", "AEGIS_OLLAMA_MODEL_DIGEST"),
+        ("remote_model", "remote-backed models are refused"),
+        ("not_generative", "cannot generate text"),
+        ("protocol_error", "ADR-0014"),
+    ],
+)
+def test_an_unusable_ollama_model_fails_with_a_hint(
+    system: FakeSystem, root: Path, detail: str, hint: str
+) -> None:
+    write_env(root, **OLLAMA)
+    system.model = ProviderStatus(healthy=False, detail=detail)
+
+    diagnosis = run_checks(system, root)
+
+    check = result(diagnosis, "Model provider")
+    assert (check.status, diagnosis.exit_code) == (Status.FAIL, 1)
+    assert detail in check.detail
+    assert hint in check.detail
+
+
+def test_an_unverified_ollama_version_warns(system: FakeSystem, root: Path) -> None:
+    write_env(root, **OLLAMA)
+    system.model = ProviderStatus(
+        healthy=True,
+        detail="ok",
+        identity=ModelIdentity("ollama", "qwen3:0.6b", MODEL_DIGEST, "0.40.0"),
+    )
+
+    check = result(run_checks(system, root), "Model provider")
+
+    assert check.status is Status.WARN
+    assert "verified with 0.34.2" in check.detail
+
+
+def test_the_model_check_waits_for_a_valid_env_file(system: FakeSystem, root: Path) -> None:
+    write_env(root, AEGIS_MODEL_PROVIDER="ollama")
+
+    check = result(run_checks(system, root), "Model provider")
+
+    assert (check.status, check.detail) == (Status.SKIP, "blocked by: .env configuration")
+    assert system.model_settings == []

@@ -49,6 +49,9 @@ make doctor
 make test
 make test-integration
 make test-security
+make up-local-ai
+make model-pull
+make test-local-ai
 make down
 ```
 
@@ -61,13 +64,16 @@ make down
 | `make env-upgrade` | Appends variables that `.env.example` has and `.env` lacks, generating secrets where needed. Never changes, reorders or removes existing lines. Prints variable names, never values. Safe to rerun. |
 | `make doctor` | Diagnoses the local environment (see below). |
 | `make up` | Starts PostgreSQL and waits until its healthcheck passes. |
+| `make up-local-ai` | Starts PostgreSQL and the local Ollama server (optional; see Local AI below) and waits until both are healthy. |
+| `make model-pull` | Downloads `AEGIS_OLLAMA_MODEL` into the local Ollama server and prints its digest. Requires `make up-local-ai`. |
 | `make migrate` | Creates or updates the database roles and schema (`aegis db bootstrap`), then applies pending migrations (`aegis db migrate`). Safe to rerun. |
 | `make api` | Runs the API in the foreground on `127.0.0.1`, port `AEGIS_API_PORT` (default 8000). Stop it with Ctrl-C. Requires `make up` and `make migrate`. |
 | `make worker` | Runs the task worker in the foreground. Ctrl-C or SIGTERM stops it gracefully. Requires `make up` and `make migrate`; run as many as you like. |
-| `make down` | Stops and removes the containers. The database volume is kept. |
+| `make down` | Stops and removes all containers, including the local Ollama server. Volumes, including downloaded models, are kept. |
 | `make test` | Runs the unit tests. Needs no Docker, database, model, network or credentials. |
 | `make test-integration` | Runs the integration tests and the end-to-end test against the running PostgreSQL. Requires `make up`. |
 | `make test-security` | Runs the security suite (`tests/security`) against the running PostgreSQL. Requires `make up`. |
+| `make test-local-ai` | Runs the tests marked `local_ai` against the real local model. Requires `make up-local-ai`, `make model-pull` and `AEGIS_OLLAMA_MODEL`. Not part of CI. |
 | `make lint` | Checks formatting and lint rules with Ruff. |
 | `make format` | Sorts imports and formats the code with Ruff. |
 | `make typecheck` | Type-checks `src/` and `tests/` with mypy in strict mode. |
@@ -89,7 +95,7 @@ Every target exits non-zero on failure.
 | `AEGIS_WORKER_HEARTBEAT_SECONDS` | `5` (not in `.env.example`) | How often a worker renews its lease; at most a third of the lease |
 | `AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS` | `10` (not in `.env.example`) | How long a running task may finish after a stop is requested, 0–300 |
 | `AEGIS_WORKER_MAX_ATTEMPTS` | `3` (not in `.env.example`) | Attempts per task, 1 to the policy's maximum of 10 |
-| `AEGIS_MODEL_PROVIDER` | `mock` (not in `.env.example`) | `mock` (deterministic and offline) or `ollama` (a local Ollama server on `127.0.0.1`; see ADR-0014. A Compose service for it arrives in Phase 2 Increment 3) |
+| `AEGIS_MODEL_PROVIDER` | `mock` (not in `.env.example`) | `mock` (deterministic and offline) or `ollama` (the local Ollama server; see Local AI below) |
 | `AEGIS_OLLAMA_PORT` | `11436` (not in `.env.example`) | Port of the local Ollama server. The host is always `127.0.0.1`; there is no host setting. |
 | `AEGIS_OLLAMA_MODEL` | none (not in `.env.example`) | Local Ollama model, such as `qwen3:0.6b`; required when the provider is `ollama`. Registry hosts are refused. |
 | `AEGIS_OLLAMA_MODEL_DIGEST` | none (not in `.env.example`) | Optional pin: the model's 64-character digest |
@@ -246,13 +252,35 @@ make worker
 
 See ADR-0009 for the design and its limitations.
 
+## Local AI (optional)
+
+The worker can use a local model through Ollama instead of the deterministic mock. Nothing else needs it: CI and the default setup use the mock.
+
+1. Add to `.env`:
+   ```bash
+   AEGIS_MODEL_PROVIDER=ollama
+   AEGIS_OLLAMA_MODEL=qwen3:0.6b
+   ```
+2. Run `make up-local-ai`. It starts AEGIS's own Ollama container, published on `127.0.0.1` only, at port `AEGIS_OLLAMA_PORT` (default 11436). An Ollama already running on the standard port 11434 is not affected.
+3. Run `make model-pull`. It downloads the model, about 523 MB for `qwen3:0.6b`, into the Docker volume `aegis_ollama-models`, and prints its digest. To pin that exact model, add `AEGIS_OLLAMA_MODEL_DIGEST=<digest>` to `.env`.
+4. Run `make doctor` (the model provider check is now required) and `make test-local-ai`.
+
+Notes:
+
+- **Image:** the container runs the Ollama image pinned by digest (0.34.2, the version the adapter was verified against; ADR-0014). Its root filesystem is read-only, it has no Linux capabilities, and privilege escalation is disabled.
+- **Hardware:** no GPU is assumed; small models run on a CPU.
+- **Remote models:** AEGIS refuses remote-backed models and never sends tools or system prompts.
+- **Network:** the Ollama container itself can reach the internet, which pulls need; restricting it is OpenShell's job (Phase 3).
+- **No task uses a model yet:** the `generate` task kind arrives in Phase 2 Increment 4.
+
 ## The doctor
 
 `make doctor` prints one line per check. Each check is **required** or **optional**, with a status of `PASS`, `WARN`, `FAIL` or `SKIP`.
 
 - **Required:** Python 3.13, uv, Docker Engine, Docker Compose v2, `.env` configuration, disk space, memory, the PostgreSQL host port, the PostgreSQL service (Compose healthcheck plus a TCP connection from the host), and database migrations (the schema is at the latest revision).
 - **Optional:** whether the doctor runs inside the project `.venv`, whether `.env` grants any permission to other users or groups, and whether `.env` defines every variable in `.env.example`.
-- **Not checked:** the model provider (Phase 2), NVIDIA OpenShell (Phase 3) and Langfuse/OpenTelemetry (Phase 8). These are listed separately and never reported as passing.
+- **Model provider:** optional and passing with the mock. Required when `AEGIS_MODEL_PROVIDER=ollama`: the local server must be reachable, the configured model present, local and matching any pinned digest. A server version other than the verified 0.34.2 is a warning.
+- **Not checked:** NVIDIA OpenShell (Phase 3) and Langfuse/OpenTelemetry (Phase 8). These are listed separately and never reported as passing.
 
 The `.env` configuration check also validates `AEGIS_ENV` and `AEGIS_LOG_LEVEL`, requires every secret (the token pepper must be at least 32 characters), and rejects unknown `AEGIS_*` names.
 
@@ -276,10 +304,12 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
   - verify the decision service: saved decisions and their inputs, the quota, the execution rules E1–E4, evaluator errors saved as denials, approval never queuing a task, and replay;
   - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only;
   - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event;
+  - verify the Compose configuration of the optional Ollama service (profile, digest pin, loopback-only port, hardening);
   - verify the Ollama adapter against a fake Ollama server on `127.0.0.1`: model checks, streaming, limits, refusals of tool calls and remote models, timeouts, stopping, and that prompts and output never reach logs or errors;
   - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process.
 
 - **The end-to-end test** (`tests/e2e`, run by `make test-integration`) uses only real processes: the `aegis` CLI creates identities and issues tokens, then the API and worker processes run tasks over HTTP on loopback. A worker is killed with SIGKILL during a task, and a second worker finishes it. The test also checks the audit chain and that no process output contains a credential.
+- **Local AI tests** (marked `local_ai`, run only by `make test-local-ai`) check the real local model: the verified runtime version, the doctor's model check, finishing on stop and length, repeatability at temperature 0 with a fixed seed, stopping, and digest pinning. `make test-integration` and CI deselect them, and they fail rather than skip when `AEGIS_OLLAMA_MODEL` is not set.
 - **The security suite** (`tests/security`, run by `make test-security`) holds the cross-cutting checks that the threat model (`docs/security/phase-1-threat-model.md`) relies on:
   - the exact privileges of `aegis_app`;
   - attacks made with stolen `aegis_app` credentials: approval bypass, forged tasks, unregistered kinds;
@@ -301,6 +331,7 @@ Integration, end-to-end and security tests fail, never skip, when PostgreSQL or 
 | `make test` | All unit tests pass. |
 | `make test-integration` | All integration and end-to-end tests pass. |
 | `make test-security` | All security tests pass. |
+| `make up-local-ai`, `make model-pull`, `make test-local-ai` (optional) | Both containers report `Healthy`; the pull prints `is ready: digest …`; all local AI tests pass. |
 | `make api`, then `curl http://127.0.0.1:8000/health/ready` | `{"status":"ready"}` |
 | `make down`, then `make up` | Previously stored data is still present. |
 

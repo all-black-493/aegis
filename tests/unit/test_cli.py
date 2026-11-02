@@ -70,3 +70,27 @@ def test_invalid_arguments_are_rejected_by_the_parser(
 
     assert excinfo.value.code == 2
     assert "invalid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("model", "message"),
+    [
+        (None, "set AEGIS_OLLAMA_MODEL"),
+        ("registry.example.com/team/model:1", "must be a local model name"),
+    ],
+)
+def test_pulling_a_model_fails_cleanly_before_connecting(
+    environment: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    model: str | None,
+    message: str,
+) -> None:
+    if model is not None:
+        environment.setenv("AEGIS_OLLAMA_MODEL", model)
+
+    assert main(["model", "pull"]) == 1
+
+    error = capsys.readouterr().err
+    assert error.startswith("error: ")
+    assert message in error
+    assert "Traceback" not in error
