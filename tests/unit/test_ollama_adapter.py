@@ -112,6 +112,7 @@ def test_thinking_text_is_never_kept() -> None:
         ),
         ({"message": "not an object"}, ProviderProtocolError, "protocol_error"),
         ({"message": {"content": 3}}, ProviderProtocolError, "protocol_error"),
+        ({"message": {"content": "\ud800"}}, ProviderProtocolError, "protocol_error"),
         (_done("unload"), ProviderProtocolError, "protocol_error"),
         ({**_done(), "eval_count": -1}, ProviderProtocolError, "protocol_error"),
         ({**_done(), "eval_count": True}, ProviderProtocolError, "protocol_error"),

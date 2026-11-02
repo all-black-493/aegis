@@ -150,7 +150,7 @@ def test_database_errors_do_not_echo_secrets(
 def test_administration_refuses_an_outdated_schema(
     test_database: str, owner_engine: Engine
 ) -> None:
-    downgrade(owner_engine, "0002")
+    downgrade(owner_engine, "0006")
     try:
         result = _cli(test_database, "identity", "create", "late-user", "--kind", "human")
     finally:

@@ -20,7 +20,9 @@ from aegis.policy.facts import (
 )
 from aegis.policy.rules import (
     ACTIVE_TASK_QUOTA,
+    MAX_GENERATE_TOKENS,
     MAX_INPUT_BYTES,
+    MAX_PROMPT_CHARS,
     Outcome,
     Policy,
     Verdict,
@@ -29,8 +31,8 @@ from aegis.policy.rules import (
 )
 from aegis.policy.version import CURRENT_POLICY, POLICY_VERSION, fingerprint
 
-PINNED_VERSION = "2026.11.01-2"
-PINNED_DIGEST = "bb923b6635621d9b96bd0acff9edbb6e0d5873ff6e379b54dee279bdd721b4d1"
+PINNED_VERSION = "2026.11.02-1"
+PINNED_DIGEST = "0e0d05f76f58343017d99aa6a9103e65153dbaf3c4257bedb58ce0f17c305524"
 SUBMITTER = UUID("00000000-0000-4000-8000-0000000000aa")
 WORKER = UUID("00000000-0000-4000-8000-000000000001")
 
@@ -76,6 +78,10 @@ def _execute(
     )
 
 
+def _generate(prompt: Any = "Name three colours.", tokens: Any = 64, **extra: Any) -> TaskFacts:
+    return _task("generate", {"prompt": prompt, "max_output_tokens": tokens, **extra})
+
+
 def _verdict(inputs: DecisionInputs, policy: Policy = CURRENT_POLICY) -> Verdict:
     return decide(policy, inputs)
 
@@ -115,6 +121,22 @@ def test_the_fingerprint_covers_the_version_and_the_rule_sources() -> None:
         (_task("wait", {"seconds": 5, "extra": 1}), (Effect.DENY, ("input_invalid",))),
         (_task("wait", {}), (Effect.DENY, ("input_invalid",))),
         (_task("noop", {"x": 1}), (Effect.DENY, ("input_invalid",))),
+        (_generate(), (Effect.ALLOW, ("submission_allowed",))),
+        (
+            _generate("p" * MAX_PROMPT_CHARS, MAX_GENERATE_TOKENS),
+            (Effect.ALLOW, ("submission_allowed",)),
+        ),
+        (_generate("p" * (MAX_PROMPT_CHARS + 1)), (Effect.DENY, ("input_invalid",))),
+        (_generate(""), (Effect.DENY, ("input_invalid",))),
+        (_generate(" \n\t"), (Effect.DENY, ("input_invalid",))),
+        (_generate(["Name", "colours"]), (Effect.DENY, ("input_invalid",))),
+        (_generate(tokens=0), (Effect.DENY, ("input_invalid",))),
+        (_generate(tokens=MAX_GENERATE_TOKENS + 1), (Effect.DENY, ("input_invalid",))),
+        (_generate(tokens=True), (Effect.DENY, ("input_invalid",))),
+        (_generate(tokens=64.0), (Effect.DENY, ("input_invalid",))),
+        (_generate(tokens="64"), (Effect.DENY, ("input_invalid",))),
+        (_generate(temperature=1), (Effect.DENY, ("input_invalid",))),
+        (_task("generate", {"prompt": "Name three colours."}), (Effect.DENY, ("input_invalid",))),
         (TaskFacts("noop", None, 2), (Effect.DENY, ("input_invalid",))),
         (_task("shell", {"command": "id"}), (Effect.DENY, ("kind_not_registered",))),
         (
@@ -268,6 +290,8 @@ def _corpus() -> list[DecisionInputs]:
         _task("noop", {}),
         _task("wait", {"seconds": 31}),
         _task("wait", {"seconds": "x"}),
+        _generate(),
+        _generate(tokens=0),
         _task("shell", {}),
         TaskFacts("noop", None, MAX_INPUT_BYTES + 1),
     ]
@@ -295,11 +319,14 @@ def test_decisions_do_not_depend_on_the_environment(monkeypatch: pytest.MonkeyPa
         ["development", "test", "production"],
         ["DEBUG", "INFO", "WARNING", "ERROR"],
         ["1024", "8000", "65535"],
+        ["mock", "ollama"],
     )
 
-    for environment, level, port in settings:
+    for environment, level, port, provider in settings:
         monkeypatch.setenv("AEGIS_ENV", environment)
         monkeypatch.setenv("AEGIS_LOG_LEVEL", level)
         monkeypatch.setenv("AEGIS_API_PORT", port)
+        monkeypatch.setenv("AEGIS_MODEL_PROVIDER", provider)
+        monkeypatch.setenv("AEGIS_OLLAMA_MODEL", "qwen3:0.6b")
         assert [_verdict(inputs) for inputs in corpus] == expected
         assert fingerprint(POLICY_VERSION) == PINNED_DIGEST

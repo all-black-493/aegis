@@ -34,6 +34,7 @@ class AuditEventType(StrEnum):
     JOB_INTERRUPTED = "job.interrupted"
     JOB_RETRIED = "job.retried"
     JOB_FENCE_LOST = "job.fence_lost"
+    MODEL_GENERATED = "model.generated"
 
 
 class Source(StrEnum):
@@ -76,6 +77,18 @@ ALLOWED_DETAILS: Mapping[AuditEventType, frozenset[str]] = MappingProxyType(
         AuditEventType.JOB_INTERRUPTED: frozenset({"attempt"}),
         AuditEventType.JOB_RETRIED: frozenset({"attempt", "run_after"}),
         AuditEventType.JOB_FENCE_LOST: frozenset({"attempt"}),
+        AuditEventType.MODEL_GENERATED: frozenset(
+            {
+                "provider",
+                "model",
+                "model_digest",
+                "runtime_version",
+                "prompt_tokens",
+                "output_tokens",
+                "duration_ms",
+                "finish_reason",
+            }
+        ),
     }
 )
 

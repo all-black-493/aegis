@@ -58,6 +58,7 @@ class FakeOllama:
     capabilities: list[str] = field(default_factory=lambda: ["completion", "thinking"])
     models: list[str] = field(default_factory=lambda: [MODEL])
     digest: str = DIGEST
+    version: object = "0.34.2"
     show_extra: dict[str, Any] = field(default_factory=dict)
     tags_extra: dict[str, Any] = field(default_factory=dict)
     status: dict[str, int] = field(default_factory=dict)
@@ -86,7 +87,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         fake = self.server.fake
         if self.path == "/api/version":
-            self._json(200, {"version": "0.34.2"})
+            self._json(200, {"version": fake.version})
         elif self.path == "/api/tags":
             models = [
                 {"name": n, "model": n, "digest": fake.digest, "size": 1, **fake.tags_extra}
@@ -201,6 +202,8 @@ def test_check_reports_the_local_model_and_its_identity(port: int) -> None:
         ({"models": ["smollm2:135m"]}, "model_missing"),
         ({"digest": "not-a-digest"}, "protocol_error"),
         ({"status": {"/api/version": 500}}, "unavailable"),
+        ({"version": "0.34.2 " + "x" * 300}, "protocol_error"),
+        ({"version": None}, "protocol_error"),
     ],
 )
 def test_check_explains_why_a_model_cannot_be_used(

@@ -19,7 +19,11 @@ APPROVAL_WAIT_SECONDS = 30
 MAX_WAIT_SECONDS = 300
 MAX_INPUT_BYTES = 16 * 1024
 MAX_JOB_ATTEMPTS = 10
-TASK_KINDS = frozenset({"noop", "wait"})
+MAX_PROMPT_CHARS = 8000
+MAX_GENERATE_TOKENS = 512
+GENERATE_TEMPERATURE = 0.0
+GENERATE_SEED = 0
+TASK_KINDS = frozenset({"noop", "wait", "generate"})
 
 
 @dataclass(frozen=True)
@@ -108,6 +112,16 @@ def _well_formed(task: TaskFacts) -> bool:
         return False
     if task.kind == "noop":
         return not task.input
+    if task.kind == "generate":
+        prompt, tokens = task.input.get("prompt"), task.input.get("max_output_tokens")
+        return (
+            set(task.input) == {"prompt", "max_output_tokens"}
+            and isinstance(prompt, str)
+            and bool(prompt.strip())
+            and len(prompt) <= MAX_PROMPT_CHARS
+            and type(tokens) is int
+            and 1 <= tokens <= MAX_GENERATE_TOKENS
+        )
     seconds = task.input.get("seconds")
     return (
         set(task.input) == {"seconds"} and type(seconds) is int and 0 <= seconds <= MAX_WAIT_SECONDS

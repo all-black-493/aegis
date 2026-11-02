@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 
@@ -11,7 +12,13 @@ from aegis.apps.api.app import create_app
 from aegis.apps.api.auth import require_actor
 from aegis.apps.api.context import ApiContext
 from aegis.apps.api.problems import ApiError
-from aegis.apps.api.tasks import TaskSubmission, decode_cursor, encode_cursor, view
+from aegis.apps.api.tasks import (
+    TaskSubmission,
+    decode_cursor,
+    encode_cursor,
+    task_service,
+    view,
+)
 from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.access import ActorContext
 from aegis.authorization.catalog import IdentityKind, Role
@@ -262,3 +269,12 @@ def test_the_development_openapi_document_describes_task_submission() -> None:
         "/v1/tasks/{task_id}",
         "/v1/tasks/{task_id}/cancel",
     }
+
+
+def test_every_request_shares_the_application_task_service() -> None:
+    engine = create_engine("postgresql+psycopg://unit:unit@127.0.0.1:9/unit")
+    context = ApiContext(engine, Secret("p" * 32), AuditRecorder(Redactor()))
+    app = create_app(context, Environment.TEST)
+    requests = [Request({"type": "http", "app": app}) for _ in range(2)]
+
+    assert task_service(requests[0]) is task_service(requests[1]) is context.tasks

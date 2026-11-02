@@ -9,6 +9,7 @@ from typing import Any
 from aegis.config.settings import MODEL_HOST, OllamaSettings
 from aegis.model_providers.contract import (
     MAX_OUTPUT_BYTES,
+    RUNTIME_VERSION,
     FinishReason,
     Generation,
     GenerationRequest,
@@ -91,6 +92,8 @@ class OllamaProvider:
     def _inspect(self) -> _Model:
         name = self._settings.model
         version = self._fetch("GET", "/api/version").get("version")
+        if not isinstance(version, str) or not RUNTIME_VERSION.fullmatch(version):
+            raise ProviderProtocolError("the runtime version is malformed")
         show = self._fetch("POST", "/api/show", {"model": name})
         if _remote(show):
             raise ModelUnavailableError("remote-backed models are refused", code="remote_model")
@@ -115,9 +118,7 @@ class OllamaProvider:
             raise ModelUnavailableError(
                 "the model digest is not the pinned one", code="digest_mismatch"
             )
-        identity = ModelIdentity(
-            PROVIDER, name, digest, version if isinstance(version, str) else None
-        )
+        identity = ModelIdentity(PROVIDER, name, digest, version)
         return _Model(identity, "thinking" in capabilities)
 
     def _fetch(
@@ -195,8 +196,11 @@ class ChatStream:
         if not isinstance(content, str):
             raise ProviderProtocolError("a streamed message is malformed")
         if content:
+            try:
+                self._bytes += len(content.encode())
+            except UnicodeEncodeError:
+                raise ProviderProtocolError("a streamed message is not valid text") from None
             self._parts.append(content)
-            self._bytes += len(content.encode())
             if self._bytes > MAX_OUTPUT_BYTES:
                 self._limited = True
                 return True

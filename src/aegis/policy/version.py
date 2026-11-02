@@ -7,7 +7,7 @@ from aegis.policy.rules import EXECUTION_RULES, SUBMISSION_RULES, Policy
 
 # Bump on every change to aegis.policy.facts or aegis.policy.rules; the fingerprint test will fail
 # until the version and the pinned fingerprint are updated together.
-POLICY_VERSION = "2026.11.01-2"
+POLICY_VERSION = "2026.11.02-1"
 
 
 def fingerprint(version: str, modules: tuple[ModuleType, ...] = (facts, rules)) -> str:
