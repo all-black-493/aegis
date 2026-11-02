@@ -19,12 +19,15 @@ from aegis.config.settings import (
     SettingsError,
     load_common_settings,
     load_database_settings,
+    load_model_settings,
     load_token_pepper,
 )
 from aegis.db.admin import bootstrap
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import schema_status, upgrade
 from aegis.identity.admin import AdministrationError, IdentityAdministration
+from aegis.integrations.ollama.provider import OllamaProvider, pull_model
+from aegis.model_providers.contract import ModelProviderError
 
 type Handler = Callable[[Mapping[str, str], CommonSettings, argparse.Namespace], int]
 
@@ -35,7 +38,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     handler: Handler = args.handler
     try:
         return handler(environ, load_common_settings(environ), args)
-    except (SettingsError, AdministrationError) as error:
+    except (SettingsError, AdministrationError, ModelProviderError) as error:
         print(f"error: {error}", file=sys.stderr)
     except (psycopg.Error, SQLAlchemyError, CommandError) as error:
         lines = str(error).strip().splitlines()
@@ -180,6 +183,25 @@ def _role_revoke(
     return 0
 
 
+def _model_pull(
+    environ: Mapping[str, str], common: CommonSettings, args: argparse.Namespace
+) -> int:
+    settings = load_model_settings(environ)
+    configure_logging(common)
+    if settings.ollama is None:
+        raise AdministrationError("set AEGIS_OLLAMA_MODEL to the model to pull")
+    ollama = settings.ollama
+    pull_model(ollama, lambda status: print(status, file=sys.stderr))
+    status = OllamaProvider(ollama, settings.timeout_seconds).check()
+    if not status.healthy or status.identity is None:
+        raise AdministrationError(f"{ollama.model} is not usable after the pull: {status.detail}")
+    print(
+        f"{ollama.model} is ready: digest {status.identity.digest},"
+        f" Ollama {status.identity.runtime_version}"
+    )
+    return 0
+
+
 type Subcommands = argparse._SubParsersAction[argparse.ArgumentParser]
 
 
@@ -246,6 +268,13 @@ def _parser() -> argparse.ArgumentParser:
         subparser = _command(role, name, handler, help_text)
         subparser.add_argument("name")
         subparser.add_argument("role", choices=roles)
+
+    model = groups.add_parser("model", help="manage the local model").add_subparsers(
+        dest="command", required=True
+    )
+    model.add_parser(
+        "pull", help="pull AEGIS_OLLAMA_MODEL into the local Ollama server (downloads it)"
+    ).set_defaults(handler=_model_pull)
     return parser
 
 

@@ -6,8 +6,9 @@ UV ?= uv
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ENVTOOL = $(UV) run --project $(ROOT) --locked python -m aegis.config.envtool
 
-.PHONY: help setup env-file env-upgrade doctor up migrate api worker down test test-integration \
-	test-security lint format typecheck check require-uv require-env
+.PHONY: help setup env-file env-upgrade doctor up up-local-ai model-pull migrate api worker down \
+	test test-integration test-security test-local-ai lint format typecheck check require-uv \
+	require-env
 
 help: ## Show available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -29,6 +30,12 @@ doctor: require-uv ## Diagnose the local development environment
 up: require-env ## Start PostgreSQL and wait until it is healthy
 	docker compose up --detach --wait
 
+up-local-ai: require-env ## Start PostgreSQL and the local Ollama server (127.0.0.1 only)
+	docker compose --profile local-ai up --detach --wait
+
+model-pull: require-uv require-env ## Download AEGIS_OLLAMA_MODEL into the local Ollama server
+	$(UV) run --locked --env-file .env aegis model pull
+
 migrate: require-uv require-env ## Create or update database roles, then apply migrations
 	$(UV) run --locked --env-file .env aegis db bootstrap
 	$(UV) run --locked --env-file .env aegis db migrate
@@ -39,17 +46,20 @@ api: require-uv require-env ## Run the API on 127.0.0.1 (port AEGIS_API_PORT, de
 worker: require-uv require-env ## Run the task worker
 	$(UV) run --locked --env-file .env python -m aegis.apps.worker
 
-down: require-env ## Stop services (the database volume is kept)
-	docker compose down
+down: require-env ## Stop all services, including local AI (volumes are kept)
+	docker compose --profile '*' down
 
 test: require-uv ## Run unit tests (no Docker, database, models or credentials needed)
 	$(UV) run --locked pytest tests/unit
 
 test-integration: require-uv require-env ## Run integration and end-to-end tests (requires `make up`)
-	$(UV) run --locked --env-file .env pytest tests/integration tests/e2e
+	$(UV) run --locked --env-file .env pytest -m 'not local_ai' tests/integration tests/e2e
 
 test-security: require-uv require-env ## Run the security suite (requires `make up`)
 	$(UV) run --locked --env-file .env pytest tests/security
+
+test-local-ai: require-uv require-env ## Run tests against the local Ollama model (requires `make up-local-ai` and `make model-pull`)
+	$(UV) run --locked --env-file .env pytest -m local_ai tests/integration tests/e2e
 
 lint: require-uv ## Check formatting and lint with Ruff
 	$(UV) run --locked ruff format --check .

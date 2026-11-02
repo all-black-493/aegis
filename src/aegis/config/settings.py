@@ -208,9 +208,8 @@ def load_model_settings(environ: Mapping[str, str]) -> ModelSettings:
         problems.append("AEGIS_OLLAMA_MODEL is required when AEGIS_MODEL_PROVIDER is ollama")
     if problems:
         raise SettingsError(problems)
-    ollama = None
-    if provider is ModelProviderKind.OLLAMA:
-        ollama = OllamaSettings(port, model, digest)
+    # Built whenever a model is named, so the model can be pulled before the worker uses it.
+    ollama = OllamaSettings(port, model, digest) if model else None
     return ModelSettings(provider, timeout, ollama)
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from aegis.config.envfile import PLACEHOLDER, EnvFileError, parse_env_file
 from aegis.config.settings import (
+    ModelProviderKind,
     SettingsError,
     load_api_settings,
     load_common_settings,
@@ -16,6 +17,7 @@ from aegis.config.variables import REQUIRED_NAMES, SECRET_NAMES
 from aegis.db.migrate import head_revision
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
 from aegis.doctor.system import System
+from aegis.integrations.ollama.provider import VERIFIED_VERSION
 
 REQUIRED_PYTHON = (3, 13)
 POSTGRES_HOST = "127.0.0.1"
@@ -55,6 +57,15 @@ class _PostgresState:
         return not self.blockers and self.error is None
 
 
+_MODEL_HINTS = {
+    "unreachable": "start it with `make up-local-ai`",
+    "model_missing": "pull it with `make model-pull`",
+    "digest_mismatch": "the model differs from AEGIS_OLLAMA_MODEL_DIGEST",
+    "remote_model": "remote-backed models are refused",
+    "not_generative": "the model cannot generate text",
+}
+
+
 def run_checks(system: System, root: Path) -> Diagnosis:
     env_values, env_result = check_env_file(root)
     engine_result, docker = check_docker_engine(system, root)
@@ -82,6 +93,7 @@ def run_checks(system: System, root: Path) -> Diagnosis:
         check_postgres_port(system, port, postgres),
         service_result,
         check_migrations(system, root, docker, env_values, service_result),
+        check_model_provider(system, env_values if env_result.status is PASS else None),
     )
     secrets = frozenset(
         value for key, value in (env_values or {}).items() if key in SECRET_NAMES and value
@@ -437,6 +449,28 @@ def check_migrations(
             name, REQUIRED, FAIL, f"at revision {current}, latest is {head}; run `make migrate`"
         )
     return CheckResult(name, REQUIRED, PASS, f"at latest revision {head}")
+
+
+def check_model_provider(system: System, env_values: dict[str, str] | None) -> CheckResult:
+    name = "Model provider"
+    if env_values is None:
+        return CheckResult(name, OPTIONAL, SKIP, "blocked by: .env configuration")
+    settings = load_model_settings(env_values)
+    if settings.provider is ModelProviderKind.MOCK or settings.ollama is None:
+        return CheckResult(name, OPTIONAL, PASS, "mock provider (deterministic, offline)")
+    ollama = settings.ollama
+    status = system.model_status(settings)
+    if not status.healthy or status.identity is None:
+        hint = _MODEL_HINTS.get(status.detail, "see ADR-0014")
+        return CheckResult(name, REQUIRED, FAIL, f"{ollama.model}: {status.detail}; {hint}")
+    identity = status.identity
+    digest = (identity.digest or "")[:12]
+    detail = f"{ollama.model} ({digest}) on Ollama {identity.runtime_version}"
+    if identity.runtime_version != VERIFIED_VERSION:
+        return CheckResult(
+            name, REQUIRED, WARN, f"{detail}; the adapter was verified with {VERIFIED_VERSION}"
+        )
+    return CheckResult(name, REQUIRED, PASS, detail)
 
 
 def _first_line(text: str) -> str:

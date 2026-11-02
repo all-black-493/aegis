@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from aegis.config.settings import ModelSettings
+from aegis.model_providers.contract import ProviderStatus
+from aegis.model_providers.factory import build_provider
+
 COMMAND_TIMEOUT_SECONDS = 15.0
 CONNECT_TIMEOUT_SECONDS = 2.0
 
@@ -33,6 +37,7 @@ class System(Protocol):
     def memory(self) -> Memory | None: ...
     def can_bind(self, host: str, port: int) -> bool: ...
     def can_connect(self, host: str, port: int) -> bool: ...
+    def model_status(self, settings: ModelSettings) -> ProviderStatus: ...
 
 
 class HostSystem:
@@ -97,3 +102,6 @@ class HostSystem:
                 return True
         except OSError:
             return False
+
+    def model_status(self, settings: ModelSettings) -> ProviderStatus:
+        return build_provider(settings).check()

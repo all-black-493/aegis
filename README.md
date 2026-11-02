@@ -1607,6 +1607,8 @@ make setup
 make env-upgrade
 make doctor
 make up
+make up-local-ai
+make model-pull
 make migrate
 make api
 make worker
@@ -1614,6 +1616,7 @@ make down
 make test
 make test-integration
 make test-security
+make test-local-ai
 make lint
 make format
 make typecheck
@@ -1624,7 +1627,6 @@ Planned, not implemented yet:
 
 ```bash
 make demo
-make up-local-ai
 make up-observability
 make up-full
 make benchmark
@@ -1644,13 +1646,13 @@ make benchmark
 - Required ports (the PostgreSQL host port).
 - Database availability (PostgreSQL health and a TCP connection; authentication is covered by `make test-integration`).
 - Migration status (the schema is at the latest revision).
-- Environment configuration (`.env`, including the API and worker settings).
+- Environment configuration (`.env`, including the API, worker and model settings).
+- The model provider: required only when `AEGIS_MODEL_PROVIDER=ollama`, when the local Ollama server must be reachable, at the verified version, with the configured model present, local and matching its pinned digest.
 
 It also runs two optional checks: whether it runs inside the project `.venv`, and whether `.env` grants access to other users.
 
 Planned checks are listed as "not checked" until their phase implements them:
 
-- Model provider connectivity and model availability (Phase 2).
 - OpenShell availability when enabled (Phase 3).
 - Langfuse availability when enabled (Phase 8).
 
