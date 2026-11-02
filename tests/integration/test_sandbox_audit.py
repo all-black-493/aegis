@@ -9,7 +9,8 @@ from aegis.authorization.catalog import Role
 from aegis.config.settings import WorkerSettings
 from aegis.identity.schema import SYSTEM_WORKER_ID
 from aegis.jobs.sandboxes import audit_sink, clean_orphaned_sandboxes
-from aegis.jobs.worker import Claim, Worker
+from aegis.jobs.settlement import Claim
+from aegis.jobs.worker import Worker
 from aegis.runtime.gate import RELEASE, SandboxGate, load_policies
 from aegis.tasks.service import Submission, TaskService
 from tests.fixtures.fake_openshell import FakeOpenShell

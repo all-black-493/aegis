@@ -21,7 +21,8 @@ from aegis.config.settings import (
     Environment,
     WorkerSettings,
 )
-from aegis.jobs.worker import Claim, Worker
+from aegis.jobs.settlement import Claim
+from aegis.jobs.worker import Worker
 from aegis.model_providers.contract import (
     Generation,
     GenerationRequest,
