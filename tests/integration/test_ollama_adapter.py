@@ -1,11 +1,7 @@
-import json
 import logging
 import socket
-import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
@@ -27,126 +23,18 @@ from aegis.model_providers.contract import (
     ProviderProtocolError,
     ProviderUnavailableError,
 )
+from tests.fixtures.fake_ollama import (
+    DIGEST,
+    MODEL,
+    FakeOllama,
+    content_line,
+    done_line,
+    ndjson_line,
+    serve,
+)
 
-MODEL = "qwen3:0.6b"
-DIGEST = "c" * 64
 PROMPT_MARKER = "PROMPT-MARKER-6f1d"
 OUTPUT_MARKER = "OUTPUT-MARKER-92ab"
-
-
-def _line(**chunk: Any) -> bytes:
-    return json.dumps(chunk).encode() + b"\n"
-
-
-def _content(text: str) -> bytes:
-    return _line(model=MODEL, message={"role": "assistant", "content": text}, done=False)
-
-
-def _done(reason: str = "stop") -> bytes:
-    return _line(
-        model=MODEL,
-        message={"role": "assistant", "content": ""},
-        done=True,
-        done_reason=reason,
-        prompt_eval_count=12,
-        eval_count=3,
-    )
-
-
-@dataclass
-class FakeOllama:
-    capabilities: list[str] = field(default_factory=lambda: ["completion", "thinking"])
-    models: list[str] = field(default_factory=lambda: [MODEL])
-    digest: str = DIGEST
-    version: object = "0.34.2"
-    show_extra: dict[str, Any] = field(default_factory=dict)
-    tags_extra: dict[str, Any] = field(default_factory=dict)
-    status: dict[str, int] = field(default_factory=dict)
-    lines: list[bytes] = field(default_factory=lambda: [_content("Red."), _done()])
-    pull_lines: list[bytes] = field(
-        default_factory=lambda: [
-            _line(status="pulling manifest"),
-            _line(status="pulling 7f4030143c1c", total=100, completed=50),
-            _line(status="pulling 7f4030143c1c", total=100, completed=100),
-            _line(status="verifying sha256 digest"),
-            _line(status="success"),
-        ]
-    )
-    delay: float = 0
-    requests: list[dict[str, Any]] = field(default_factory=list)
-    disconnected: threading.Event = field(default_factory=threading.Event)
-
-
-class _Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    server: "_Server"
-
-    def log_message(self, *_args: object) -> None:
-        pass
-
-    def do_GET(self) -> None:
-        fake = self.server.fake
-        if self.path == "/api/version":
-            self._json(200, {"version": fake.version})
-        elif self.path == "/api/tags":
-            models = [
-                {"name": n, "model": n, "digest": fake.digest, "size": 1, **fake.tags_extra}
-                for n in fake.models
-            ]
-            self._json(200, {"models": models})
-        else:
-            self._json(404, {"error": "not found"})
-
-    def do_POST(self) -> None:
-        fake = self.server.fake
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        if self.path == "/api/show":
-            if body["model"] not in fake.models:
-                self._json(404, {"error": f"model '{body['model']}' not found"})
-                return
-            show = {"capabilities": fake.capabilities, "details": {}, **fake.show_extra}
-            self._json(200, show)
-            return
-        fake.requests.append(body)
-        lines = fake.pull_lines if self.path == "/api/pull" else fake.lines
-        if fake.status.get(self.path, 200) != 200:
-            self._json(fake.status[self.path], {"error": "refused"})
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
-        try:
-            for line in lines:
-                if fake.delay:
-                    time.sleep(fake.delay)
-                self.wfile.write(f"{len(line):x}\r\n".encode() + line + b"\r\n")
-                self.wfile.flush()
-            self.wfile.write(b"0\r\n\r\n")
-        except OSError:
-            fake.disconnected.set()
-
-    def _json(self, status: int, value: dict[str, Any]) -> None:
-        if self.path in self.server.fake.status and self.path != "/api/chat":
-            status = self.server.fake.status[self.path]
-        data = json.dumps(value).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-
-class _Server(ThreadingHTTPServer):
-    daemon_threads = True
-
-    def __init__(self, fake: FakeOllama) -> None:
-        super().__init__(("127.0.0.1", 0), _Handler)
-        self.fake = fake
-
-    def handle_error(self, request: object, client_address: object) -> None:
-        # The adapter closes connections early on purpose; resets are expected, not failures.
-        pass
 
 
 @pytest.fixture
@@ -156,12 +44,8 @@ def fake() -> FakeOllama:
 
 @pytest.fixture
 def port(fake: FakeOllama) -> Iterator[int]:
-    server = _Server(fake)
-    thread = threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True)
-    thread.start()
-    yield server.server_address[1]
-    server.shutdown()
-    server.server_close()
+    with serve(fake) as bound:
+        yield bound
 
 
 def _provider(port: int, *, digest: str | None = None, timeout: float = 5) -> OllamaProvider:
@@ -223,7 +107,7 @@ def test_a_pinned_digest_must_match_and_a_missing_server_is_unreachable(port: in
 
 
 def test_generation_streams_text_with_counts_and_identity(fake: FakeOllama, port: int) -> None:
-    fake.lines = [_content("Red, "), _content("green."), _done()]
+    fake.lines = [content_line("Red, "), content_line("green."), done_line()]
 
     generation = _provider(port).generate(_request(), _never)
 
@@ -249,7 +133,7 @@ def test_requests_carry_no_tools_format_or_system_prompt(
 
 
 def test_output_beyond_the_limit_is_cut_and_the_stream_closed(fake: FakeOllama, port: int) -> None:
-    fake.lines = [_content("x" * 1000) for _ in range(2000)] + [_done()]
+    fake.lines = [content_line("x" * 1000) for _ in range(2000)] + [done_line()]
 
     generation = _provider(port).generate(_request(), _never)
 
@@ -262,12 +146,16 @@ def test_output_beyond_the_limit_is_cut_and_the_stream_closed(fake: FakeOllama, 
     ("lines", "error", "code"),
     [
         (
-            [_line(message={"role": "assistant", "content": "", "tool_calls": [{}]}, done=False)],
+            [
+                ndjson_line(
+                    message={"role": "assistant", "content": "", "tool_calls": [{}]}, done=False
+                )
+            ],
             ProviderProtocolError,
             "tool_call",
         ),
         (
-            [_line(message={"content": "x"}, remote_host="https://ollama.com", done=False)],
+            [ndjson_line(message={"content": "x"}, remote_host="https://ollama.com", done=False)],
             ModelUnavailableError,
             "remote_model",
         ),
@@ -277,13 +165,13 @@ def test_output_beyond_the_limit_is_cut_and_the_stream_closed(fake: FakeOllama, 
             ProviderProtocolError,
             "protocol_error",
         ),
-        ([_content("half an answer")], ProviderUnavailableError, "unavailable"),
+        ([content_line("half an answer")], ProviderUnavailableError, "unavailable"),
         (
-            [_line(error="model runner has unexpectedly stopped")],
+            [ndjson_line(error="model runner has unexpectedly stopped")],
             ProviderUnavailableError,
             "unavailable",
         ),
-        ([_done("unload")], ProviderProtocolError, "protocol_error"),
+        ([done_line("unload")], ProviderProtocolError, "protocol_error"),
     ],
 )
 def test_unsafe_or_broken_streams_are_refused(
@@ -298,8 +186,8 @@ def test_unsafe_or_broken_streams_are_refused(
 
 
 def test_a_model_that_only_thinks_cannot_stream_forever(fake: FakeOllama, port: int) -> None:
-    thought = _line(message={"role": "assistant", "content": "", "thinking": "z" * 60_000})
-    fake.lines = [thought] * (MAX_STREAM_BYTES // 60_000 + 2) + [_done()]
+    thought = ndjson_line(message={"role": "assistant", "content": "", "thinking": "z" * 60_000})
+    fake.lines = [thought] * (MAX_STREAM_BYTES // 60_000 + 2) + [done_line()]
 
     with pytest.raises(ProviderProtocolError):
         _provider(port).generate(_request(), _never)
@@ -345,7 +233,7 @@ def test_an_unreachable_server_is_retryable() -> None:
 
 
 def test_a_stop_request_ends_generation_and_closes_the_stream(fake: FakeOllama, port: int) -> None:
-    fake.lines = [_content("tick ") for _ in range(200)] + [_done()]
+    fake.lines = [content_line("tick ") for _ in range(200)] + [done_line()]
     fake.delay = 0.02
     checks = 0
 
@@ -366,11 +254,11 @@ def test_prompts_and_outputs_never_reach_logs_or_errors(
     fake: FakeOllama, port: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    fake.lines = [_content(OUTPUT_MARKER), _done()]
+    fake.lines = [content_line(OUTPUT_MARKER), done_line()]
     provider = _provider(port)
 
     generation = provider.generate(_request(f"Repeat {PROMPT_MARKER}"), _never)
-    fake.lines = [_content(OUTPUT_MARKER), b"{broken\n"]
+    fake.lines = [content_line(OUTPUT_MARKER), b"{broken\n"]
     with pytest.raises(ProviderProtocolError) as refused:
         provider.generate(_request(f"Repeat {PROMPT_MARKER}"), _never)
 
@@ -381,7 +269,7 @@ def test_prompts_and_outputs_never_reach_logs_or_errors(
 
 
 def test_a_pull_reports_each_new_status_once(fake: FakeOllama, port: int) -> None:
-    fake.pull_lines.insert(1, _line(status="pulling \x1b[31mlayer\x07"))
+    fake.pull_lines.insert(1, ndjson_line(status="pulling \x1b[31mlayer\x07"))
     reported: list[str] = []
 
     pull_model(OllamaSettings(port, MODEL, None), reported.append)
@@ -400,11 +288,11 @@ def test_a_pull_reports_each_new_status_once(fake: FakeOllama, port: int) -> Non
     ("lines", "error", "code"),
     [
         (
-            [_line(status="pulling manifest"), _line(error="file does not exist")],
+            [ndjson_line(status="pulling manifest"), ndjson_line(error="file does not exist")],
             ModelUnavailableError,
             "pull_failed",
         ),
-        ([_line(status="pulling manifest")], ProviderUnavailableError, "unavailable"),
+        ([ndjson_line(status="pulling manifest")], ProviderUnavailableError, "unavailable"),
     ],
 )
 def test_a_failed_pull_is_reported(

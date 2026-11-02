@@ -871,6 +871,7 @@ AEGIS/
 │       └── tasks/
 ├── tests/
 │   ├── conftest.py
+│   ├── fixtures/
 │   ├── unit/
 │   ├── integration/
 │   ├── security/
@@ -918,9 +919,6 @@ AEGIS/
 │   ├── task_completion/
 │   ├── policy_regression/
 │   └── datasets/
-│
-├── tests/
-│   └── fixtures/
 │
 ├── deploy/
 │   ├── docker/
@@ -1784,7 +1782,7 @@ AEGIS is an evolving research and engineering project.
 
 The architecture describes the intended end state. Components must be implemented incrementally and marked complete only after their acceptance tests pass.
 
-Phases 0 and 1 are implemented: see [docs/development/getting-started.md](docs/development/getting-started.md) and the [Phase 1 threat model](docs/security/phase-1-threat-model.md). Phase 2 is in progress: the provider contract, the mock and Ollama providers, the optional `local-ai` service and the `generate` task kind are built; the workflow parity check across both providers is next. No phase provides runtime isolation; OpenShell enforcement arrives in Phase 3.
+Phases 0, 1 and 2 are implemented: see [docs/development/getting-started.md](docs/development/getting-started.md), the [Phase 1 threat model](docs/security/phase-1-threat-model.md) and the [Phase 2 threat model](docs/security/phase-2-threat-model.md). Phase 2's acceptance workflow, a `generate` task from the API through the worker to its audited result, passes with the mock provider in CI and with a local Ollama model through `make test-local-ai`. No phase provides runtime isolation; OpenShell enforcement arrives in Phase 3.
 
 | Capability | Target status |
 |---|---|
@@ -1793,7 +1791,8 @@ Phases 0 and 1 are implemented: see [docs/development/getting-started.md](docs/d
 | Local-first development strategy | Defined |
 | Local development foundation (Phase 0) | Implemented |
 | API, worker, database and configuration (Phase 1) | Implemented |
-| Ollama integration | Planned |
+| Model provider abstraction (Phase 2) | Implemented: a deterministic mock, a local Ollama provider and the `generate` task kind |
+| Ollama integration | Implemented: local models on `127.0.0.1` only, pinned image and model digests, verified on Ollama 0.34.2 |
 | NVIDIA OpenShell integration | Planned |
 | Agent orchestration | Planned |
 | Provenance engine | Planned |
