@@ -10,7 +10,7 @@ AEGIS has implemented **Phase 0** (the local development foundation) and **Phase
 - the authorization rules and the shared security-decision contract;
 - task, decision and history storage whose integrity rules the database enforces;
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
-- the model provider contract and a deterministic, offline mock provider (no task uses a model yet);
+- the model provider contract, a deterministic, offline mock provider and an adapter for a local Ollama server (no task uses a model yet);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling, including a security suite and an end-to-end test;
@@ -89,7 +89,7 @@ Every target exits non-zero on failure.
 | `AEGIS_WORKER_HEARTBEAT_SECONDS` | `5` (not in `.env.example`) | How often a worker renews its lease; at most a third of the lease |
 | `AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS` | `10` (not in `.env.example`) | How long a running task may finish after a stop is requested, 0–300 |
 | `AEGIS_WORKER_MAX_ATTEMPTS` | `3` (not in `.env.example`) | Attempts per task, 1 to the policy's maximum of 10 |
-| `AEGIS_MODEL_PROVIDER` | `mock` (not in `.env.example`) | `mock` (deterministic and offline) or `ollama` (a local Ollama server, available from Phase 2 Increment 2; until then this setting is refused) |
+| `AEGIS_MODEL_PROVIDER` | `mock` (not in `.env.example`) | `mock` (deterministic and offline) or `ollama` (a local Ollama server on `127.0.0.1`; see ADR-0014. A Compose service for it arrives in Phase 2 Increment 3) |
 | `AEGIS_OLLAMA_PORT` | `11436` (not in `.env.example`) | Port of the local Ollama server. The host is always `127.0.0.1`; there is no host setting. |
 | `AEGIS_OLLAMA_MODEL` | none (not in `.env.example`) | Local Ollama model, such as `qwen3:0.6b`; required when the provider is `ollama`. Registry hosts are refused. |
 | `AEGIS_OLLAMA_MODEL_DIGEST` | none (not in `.env.example`) | Optional pin: the model's 64-character digest |
@@ -276,6 +276,7 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
   - verify the decision service: saved decisions and their inputs, the quota, the execution rules E1–E4, evaluator errors saved as denials, approval never queuing a task, and replay;
   - verify the API against the test database: CLI-issued tokens, identical 401s, `auth.failed` auditing, readiness when the database is down or behind, and that a real API process listens on `127.0.0.1` only;
   - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event;
+  - verify the Ollama adapter against a fake Ollama server on `127.0.0.1`: model checks, streaming, limits, refusals of tool calls and remote models, timeouts, stopping, and that prompts and output never reach logs or errors;
   - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process.
 
 - **The end-to-end test** (`tests/e2e`, run by `make test-integration`) uses only real processes: the `aegis` CLI creates identities and issues tokens, then the API and worker processes run tasks over HTTP on loopback. A worker is killed with SIGKILL during a task, and a second worker finishes it. The test also checks the audit chain and that no process output contains a credential.

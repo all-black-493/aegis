@@ -24,22 +24,28 @@ class FinishReason(StrEnum):
 
 class ModelProviderError(Exception):
     retryable: ClassVar[bool] = False
+    default_code: ClassVar[str] = "model_error"
+
+    def __init__(self, message: str = "", *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code or self.default_code
 
 
 class ProviderUnavailableError(ModelProviderError):
     retryable = True
+    default_code = "unavailable"
 
 
 class ModelUnavailableError(ModelProviderError):
-    pass
+    default_code = "model_unavailable"
 
 
 class ProviderProtocolError(ModelProviderError):
-    pass
+    default_code = "protocol_error"
 
 
 class GenerationStoppedError(ModelProviderError):
-    pass
+    default_code = "stopped"
 
 
 class InvalidGenerationError(ValueError):

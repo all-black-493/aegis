@@ -202,12 +202,10 @@ def test_local_model_names_are_accepted(model: str) -> None:
     assert settings.ollama.model == model
 
 
-def test_the_factory_builds_the_mock_and_refuses_what_does_not_exist_yet() -> None:
-    ollama = load_model_settings({"AEGIS_MODEL_PROVIDER": "ollama", "AEGIS_OLLAMA_MODEL": "x:1"})
-
+def test_the_factory_builds_the_configured_provider() -> None:
     assert isinstance(build_provider(load_model_settings({})), MockProvider)
-    with pytest.raises(ModelUnavailableError, match="not available yet"):
-        build_provider(ollama)
+    with pytest.raises(ModelUnavailableError, match="not configured"):
+        build_provider(ModelSettings(ModelProviderKind.OLLAMA, 120, None))
 
 
 def test_the_mock_opens_no_files_or_sockets(monkeypatch: pytest.MonkeyPatch) -> None:
