@@ -90,6 +90,10 @@ def test_identities_and_statuses_are_validated() -> None:
         ModelIdentity("ollama", "qwen3:0.6b", "sha256:" + DIGEST, "0.34.2")
     with pytest.raises(InvalidGenerationError, match="provider and a model"):
         ModelIdentity("", "x", None, None)
+    with pytest.raises(InvalidGenerationError, match="at most 128"):
+        ModelIdentity("ollama", "m" * 129, None, None)
+    with pytest.raises(InvalidGenerationError, match="runtime version"):
+        ModelIdentity("ollama", "qwen3:0.6b", None, "0.34.2\nforged")
     with pytest.raises(InvalidGenerationError, match="short lowercase code"):
         ProviderStatus(healthy=False, detail="Connection refused to 10.0.0.1")
 

@@ -1,22 +1,22 @@
 # Getting started
 
-AEGIS has implemented **Phase 0** (the local development foundation) and **Phase 1** (API, worker, database and configuration). The repository provides:
+AEGIS has implemented **Phase 0** (the local development foundation) and **Phase 1** (API, worker, database and configuration). **Phase 2** (model provider abstraction) is in progress. The repository provides:
 
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
 - identities, role assignments and API credentials, administered through the `aegis` CLI;
 - an HTTP API on `127.0.0.1` with health checks, `GET /v1/me`, and routes to submit, view, list and cancel tasks;
-- a worker that runs the two built-in task kinds, `noop` and `wait`, with leases, retries and recovery;
+- a worker that runs the three built-in task kinds, `noop`, `wait` and `generate`, with leases, retries and recovery;
 - the authorization rules and the shared security-decision contract;
 - task, decision and history storage whose integrity rules the database enforces;
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
-- the model provider contract, a deterministic, offline mock provider and an adapter for a local Ollama server (no task uses a model yet);
+- the model provider contract, a deterministic, offline mock provider and an adapter for a local Ollama server, used by `generate` tasks;
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling, including a security suite and an end-to-end test;
-- the Phase 1 threat model, `docs/security/phase-1-threat-model.md`.
+- the Phase 1 threat model, `docs/security/phase-1-threat-model.md`, and the Phase 2 threat model, `docs/security/phase-2-threat-model.md`.
 
-The worker runs only `noop` and `wait`, which have no effects outside AEGIS. There is no agent execution, model provider or OpenShell integration yet, and AEGIS claims no filesystem, network or process isolation. Nothing executes untrusted workloads. The API and worker run as processes on the host; containers for them are planned, not built.
+The worker runs only `noop`, `wait` and `generate`. The first two have no effects outside AEGIS; `generate` sends one prompt to the configured model (the mock by default, or a local Ollama on `127.0.0.1`) and stores the text it returns. There is no agent execution or OpenShell integration yet, and AEGIS claims no filesystem, network or process isolation. Nothing executes untrusted workloads. The API and worker run as processes on the host; containers for them are planned, not built.
 
 ## Supported platform
 
@@ -227,7 +227,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: first-task-0001" 
 
 Tasks:
 
-- The only kinds are `noop` (input `{}`) and `wait` (input `{"seconds": n}`, 0 to 300). A `wait` over 30 seconds is created in `awaiting_approval`; approvals arrive in Phase 6. Each identity may have at most 10 unfinished tasks.
+- The only kinds are `noop` (input `{}`), `wait` (input `{"seconds": n}`, 0 to 300) and `generate` (input `{"prompt": text, "max_output_tokens": n}`, 1 to 8,000 characters and 1 to 512 tokens; see The worker). A `wait` over 30 seconds is created in `awaiting_approval`; approvals arrive in Phase 6. Each identity may have at most 10 unfinished tasks.
 - `Idempotency-Key` is required: 8 to 128 characters from `A-Z a-z 0-9 _ . : -`, unique per identity. Repeating a request with the same key and body returns the original task with `Idempotent-Replayed: true`; the same key with a different body gets `409`. A refused submission does not use up its key.
 - A refused request gets `403` with code `denied` and the policy's reason codes. Tasks the caller may not see get the same `404` as tasks that do not exist.
 - Every submission, cancellation and refusal is saved as a security decision with its audit events, in the same transaction as the change. Reading another identity's tasks is audited as `task.read_privileged`.
@@ -244,10 +244,17 @@ See ADR-0004 and ADR-0011 for the design and its limitations.
 - **Cancellation.** A cancellation request reaches a running task at the next heartbeat. A heartbeat also stops the task if its submitter has been disabled.
 - **Recovery.** If a worker dies, any worker notices the expired lease and moves the task to `interrupted`, then back to `queued` after a backoff, or to `failed` once its attempts are used up.
 - **Shutdown.** Ctrl-C or SIGTERM stops the worker claiming. A running task gets `AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS` to finish; otherwise it is released and queued again.
-- **Delivery.** Delivery is at least once: a task may run again after a crash. The only kinds are `noop` and `wait`, which have no outside effects.
+- **Delivery.** Delivery is at least once: a task may run again after a crash. `noop` and `wait` have no outside effects, and `generate` only asks the model again.
+- **Models.** The worker builds the provider named by `AEGIS_MODEL_PROVIDER` once, at startup, and checks it. If it is unavailable, the worker logs `model provider unavailable` and still runs other kinds. A `generate` task is retried while the model server cannot be reached and fails with the provider's code (for example `model_missing` or `digest_mismatch`) otherwise.
+- **`generate` results.** The result holds the `text`, why it stopped (`finish_reason`), the model's identity (`provider`, `model`, `model_digest`, `runtime_version`), token counts, the duration, and the fixed `temperature` 0 and `seed` 0. Each success adds a `model.generated` audit event with the identity and counts, never the prompt or the text. Neither appears in the logs.
+- **Prompts are stored.** A prompt is task input, kept with the task and its decision. Never put secrets in a prompt. The output is untrusted text: AEGIS stores it and never acts on it.
 
 ```bash
 make worker
+curl -s -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: first-generate-0001" \
+  -H "Content-Type: application/json" \
+  -d '{"kind": "generate", "input": {"prompt": "Name three primary colours.", "max_output_tokens": 64}}' \
+  http://127.0.0.1:8000/v1/tasks
 ```
 
 See ADR-0009 for the design and its limitations.
@@ -271,7 +278,7 @@ Notes:
 - **Hardware:** no GPU is assumed; small models run on a CPU.
 - **Remote models:** AEGIS refuses remote-backed models and never sends tools or system prompts.
 - **Network:** the Ollama container itself can reach the internet, which pulls need; restricting it is OpenShell's job (Phase 3).
-- **No task uses a model yet:** the `generate` task kind arrives in Phase 2 Increment 4.
+- **Using it:** restart `make worker` after changing the model settings; the worker reads them once, at startup. `generate` tasks then run on the local model, and their results name its digest and Ollama version.
 
 ## The doctor
 
@@ -306,7 +313,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
   - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event;
   - verify the Compose configuration of the optional Ollama service (profile, digest pin, loopback-only port, hardening);
   - verify the Ollama adapter against a fake Ollama server on `127.0.0.1`: model checks, streaming, limits, refusals of tool calls and remote models, timeouts, stopping, and that prompts and output never reach logs or errors;
-  - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process.
+  - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process;
+  - verify `generate` tasks with the mock: from the API to `succeeded` with `model.generated`, refused prompts never sent, cancellation stopping the model, retries while the model is unavailable, failure codes for refused models, and a worker process with an unreachable model still running other kinds.
 
 - **The end-to-end test** (`tests/e2e`, run by `make test-integration`) uses only real processes: the `aegis` CLI creates identities and issues tokens, then the API and worker processes run tasks over HTTP on loopback. A worker is killed with SIGKILL during a task, and a second worker finishes it. The test also checks the audit chain and that no process output contains a credential.
 - **Local AI tests** (marked `local_ai`, run only by `make test-local-ai`) check the real local model: the verified runtime version, the doctor's model check, finishing on stop and length, repeatability at temperature 0 with a fixed seed, stopping, and digest pinning. `make test-integration` and CI deselect them, and they fail rather than skip when `AEGIS_OLLAMA_MODEL` is not set.
@@ -315,7 +323,8 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
   - attacks made with stolen `aegis_app` credentials: approval bypass, forged tasks, unregistered kinds;
   - spoofed request IDs;
   - a sweep of every table, log and response for credentials;
-  - failure injection: database down, database lost during a run, audit writes failing in the worker, evaluator errors, and a worker started on an outdated schema.
+  - failure injection: database down, database lost during a run, audit writes failing in the worker, evaluator errors, and a worker started on an outdated schema;
+  - the model boundary: model output stored as inert text, tasks unable to choose the model, sampling or tools, and output the database cannot hold failing the task.
 
 Integration, end-to-end and security tests fail, never skip, when PostgreSQL or the settings are missing. They share the `<AEGIS_POSTGRES_DB>_test` database, recreated for each run; one security test also recreates `<AEGIS_POSTGRES_DB>_outdated_test`. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 

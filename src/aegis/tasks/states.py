@@ -8,6 +8,7 @@ from aegis.authorization.contract import Effect, Stage
 class TaskKind(StrEnum):
     NOOP = "noop"
     WAIT = "wait"
+    GENERATE = "generate"
 
 
 class TaskState(StrEnum):

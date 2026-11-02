@@ -1,17 +1,25 @@
 import os
 import subprocess
 import sys
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
 from psycopg import errors
 from psycopg.rows import TupleRow
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
+from sqlalchemy.exc import DBAPIError
 
-from aegis.config.settings import APP_ROLE, OWNER_ROLE, DatabaseSettings
+from aegis.audit.recorder import AuditRecorder
+from aegis.authorization.access import ActorContext
+from aegis.authorization.catalog import IdentityKind, Role
+from aegis.config.logs import Redactor
+from aegis.config.settings import APP_ROLE, OWNER_ROLE, DatabaseSettings, load_token_pepper
 from aegis.db.admin import bootstrap
 from aegis.db.engine import connect
 from aegis.db.migrate import downgrade, head_revision, schema_status, upgrade
+from aegis.identity.admin import IdentityAdministration
+from aegis.tasks.service import Submission, TaskService
 
 ROLES = (OWNER_ROLE, APP_ROLE)
 
@@ -55,6 +63,43 @@ def test_downgrade_then_upgrade_round_trip(owner_engine: Engine, app_engine: Eng
 
     with app_engine.connect() as connection:
         assert schema_status(connection).ready
+
+
+def test_a_downgrade_waits_for_generate_tasks_and_keeps_them_as_history(
+    owner_engine: Engine, app_engine: Engine
+) -> None:
+    recorder = AuditRecorder(Redactor())
+    name = f"downgrade-{uuid4().hex[:12]}"
+    with owner_engine.begin() as connection:
+        administration = IdentityAdministration(connection, recorder)
+        identity_id = administration.create_identity(name, IdentityKind.HUMAN, [Role.OPERATOR])
+        credential = administration.issue_credential(name, load_token_pepper(os.environ))
+    actor = ActorContext(
+        identity_id, IdentityKind.HUMAN, frozenset({Role.OPERATOR}), credential.credential_id
+    )
+    service = TaskService(app_engine, recorder)
+
+    def submit() -> UUID:
+        task_input = {"prompt": "Name a colour.", "max_output_tokens": 8}
+        submission = Submission("generate", task_input, f"key-{uuid4().hex}")
+        return service.submit(actor, submission, "r").task.task_id
+
+    task_id = submit()
+    try:
+        with pytest.raises(DBAPIError, match="unfinished generate tasks exist"):
+            downgrade(owner_engine, "0006")
+        service.cancel(actor, task_id, "r")
+        downgrade(owner_engine, "0006")
+        with pytest.raises(DBAPIError, match="ck_tasks_kind"):
+            submit()
+        with owner_engine.connect() as connection:
+            kept = connection.execute(
+                text("SELECT state FROM aegis.tasks WHERE id = :id"), {"id": task_id}
+            ).scalar_one()
+        assert kept == "cancelled"
+    finally:
+        upgrade(owner_engine)
+    service.cancel(actor, submit(), "r")
 
 
 def test_bootstrap_is_repeatable_and_restores_role_attributes(

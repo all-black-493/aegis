@@ -10,8 +10,10 @@ MAX_OUTPUT_TOKENS = 2048
 MAX_OUTPUT_BYTES = 4 * 1024
 MAX_SEED = 2**31 - 1
 MAX_TEMPERATURE = 2.0
+MAX_NAME_CHARS = 128
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _DETAIL = re.compile(r"[a-z][a-z0-9_]{0,63}")
+RUNTIME_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}")
 
 type StopCheck = Callable[[], bool]
 
@@ -62,6 +64,10 @@ class ModelIdentity:
     def __post_init__(self) -> None:
         if not self.provider or not self.model:
             raise InvalidGenerationError("a model identity needs a provider and a model")
+        if max(len(self.provider), len(self.model)) > MAX_NAME_CHARS:
+            raise InvalidGenerationError(f"provider and model names are at most {MAX_NAME_CHARS}")
+        if self.runtime_version is not None and not RUNTIME_VERSION.fullmatch(self.runtime_version):
+            raise InvalidGenerationError("a runtime version must be a short version string")
         if self.digest is not None and not _DIGEST.fullmatch(self.digest):
             raise InvalidGenerationError("a model digest must be 64 lowercase hex characters")
 

@@ -3,8 +3,8 @@ from alembic.script import ScriptDirectory
 from aegis.db.migrate import SchemaStatus, alembic_config, head_revision
 
 
-def test_latest_revision_is_the_jobs_table() -> None:
-    assert head_revision() == "0006"
+def test_latest_revision_adds_generate_tasks() -> None:
+    assert head_revision() == "0007"
 
 
 def test_migration_history_is_linear_and_reversible() -> None:

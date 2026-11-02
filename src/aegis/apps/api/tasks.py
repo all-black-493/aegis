@@ -80,8 +80,7 @@ SUBMIT_OPENAPI = {
 
 
 def task_service(request: Request) -> TaskService:
-    context = api_context(request)
-    return TaskService(context.engine, context.recorder)
+    return api_context(request).tasks
 
 
 def idempotency_key(request: Request) -> str:

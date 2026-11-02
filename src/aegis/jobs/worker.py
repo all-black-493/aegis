@@ -11,15 +11,30 @@ from uuid import UUID, uuid4
 from sqlalchemy import Connection, Engine, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from aegis.audit.events import ActorKind, AuditEvent, AuditEventType, DetailValue, Outcome, Source
+from aegis.audit.events import (
+    ALLOWED_DETAILS,
+    ActorKind,
+    AuditEvent,
+    AuditEventType,
+    DetailValue,
+    Outcome,
+    Source,
+)
 from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.catalog import IdentityKind
 from aegis.authorization.contract import Effect, SecurityDecision
 from aegis.config.settings import WorkerSettings
 from aegis.identity.schema import SYSTEM_WORKER_ID, identities
 from aegis.jobs import repository as jobs
-from aegis.jobs.handlers import REGISTRY, Handler, HandlerContext, RetryableError
+from aegis.jobs.handlers import (
+    REGISTRY,
+    Handler,
+    HandlerContext,
+    HandlerFailure,
+    RetryableError,
+)
 from aegis.jobs.repository import JobRecord, JobState
+from aegis.model_providers.contract import ModelProvider
 from aegis.policy.service import DecisionService
 from aegis.tasks.repository import TaskRecord, lock_task, transaction_time
 from aegis.tasks.schema import tasks
@@ -31,6 +46,7 @@ BACKOFF_MAX_SECONDS = 60.0
 MAX_RESULT_BYTES = 8 * 1024
 RECOVERY_BATCH = 10
 SUPERVISION_TICK_SECONDS = 0.25
+SUCCESS_EVENTS = frozenset({AuditEventType.JOB_RETRIED, AuditEventType.MODEL_GENERATED})
 
 logger = logging.getLogger("aegis.worker")
 
@@ -78,6 +94,7 @@ class Worker:
         decisions: DecisionService | None = None,
         owner: str | None = None,
         backoff: Callable[[int], float] = exponential_backoff,
+        provider: ModelProvider | None = None,
     ) -> None:
         self._engine = engine
         self._recorder = recorder
@@ -85,6 +102,8 @@ class Worker:
         self._handlers = handlers
         self._decisions = decisions or DecisionService(recorder)
         self._backoff = backoff
+        # One provider per worker process, shared by every task's handler context.
+        self._provider = provider
         self.owner = owner or f"worker-{uuid4().hex}"
 
     def run(self, stop: threading.Event) -> None:
@@ -137,7 +156,7 @@ class Worker:
         halt, run = threading.Event(), _Run()
         thread = threading.Thread(
             target=_call,
-            args=(handler, dict(claim.task.input), HandlerContext(halt), run),
+            args=(handler, dict(claim.task.input), HandlerContext(halt, self._provider), run),
             name=f"handler-{claim.task.task_id}",
             daemon=True,
         )
@@ -250,6 +269,8 @@ class Worker:
             if isinstance(run.error, RetryableError):
                 delay = self._backoff(job.attempt)
                 self._interrupt(connection, task, job, "handler_retryable_error", delay)
+            elif isinstance(run.error, HandlerFailure):
+                self._fail(connection, task, claim.job, run.error.code)
             elif run.error is not None:
                 logger.warning("handler failed: %s", type(run.error).__name__, extra=_ids(claim))
                 self._fail(connection, task, claim.job, "handler_error")
@@ -261,6 +282,8 @@ class Worker:
                     connection, task, TaskState.SUCCEEDED, claim.job, "completed", result=result
                 )
                 jobs.finish(connection, claim.job, None)
+                if done.kind is TaskKind.GENERATE:
+                    self._audit_generation(connection, done, claim.job, result)
                 _log("succeeded", done, claim.job)
 
         self._fenced(claim, settle)
@@ -384,6 +407,20 @@ class Worker:
             _event(event_type, task.task_id, ref, reason, {"attempt": ref.attempt, **details}),
         )
 
+    def _audit_generation(
+        self, connection: Connection, task: TaskRecord, ref: JobRef, result: Mapping[str, Any]
+    ) -> None:
+        # The model's identity and usage only; the text itself never reaches the audit store.
+        details: dict[str, DetailValue] = {
+            key: value
+            for key in ALLOWED_DETAILS[AuditEventType.MODEL_GENERATED]
+            if isinstance(value := result.get(key), str | int) or value is None
+        }
+        self._recorder.record(
+            connection,
+            _event(AuditEventType.MODEL_GENERATED, task.task_id, ref, "completed", details),
+        )
+
     def _fence_lost(self, claim: Claim) -> None:
         logger.warning("fence lost; the handler's result is discarded", extra=_ids(claim))
         event = _event(
@@ -412,11 +449,13 @@ def _call(
 def _valid_result(result: object) -> bool:
     if not isinstance(result, Mapping):
         return False
+    # Measured as UTF-8, as PostgreSQL stores it; text that cannot be encoded is refused.
     try:
-        encoded = json.dumps(result, allow_nan=False, separators=(",", ":"))
+        encoded = json.dumps(result, allow_nan=False, ensure_ascii=False, separators=(",", ":"))
+        size = len(encoded.encode())
     except (TypeError, ValueError):
         return False
-    return len(encoded.encode()) <= MAX_RESULT_BYTES and "\\u0000" not in encoded
+    return size <= MAX_RESULT_BYTES and "\\u0000" not in encoded
 
 
 def _event(
@@ -426,7 +465,7 @@ def _event(
     reason: str,
     details: Mapping[str, DetailValue],
 ) -> AuditEvent:
-    outcome = Outcome.SUCCESS if event_type is AuditEventType.JOB_RETRIED else Outcome.FAILURE
+    outcome = Outcome.SUCCESS if event_type in SUCCESS_EVENTS else Outcome.FAILURE
     return AuditEvent(
         event_type=event_type,
         source=Source.WORKER,

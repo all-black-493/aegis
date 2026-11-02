@@ -15,21 +15,60 @@ from aegis.config.settings import (
     load_worker_settings,
 )
 from aegis.config.variables import SECRET_NAMES
-from aegis.jobs.handlers import REGISTRY, HandlerContext, noop, wait
+from aegis.jobs.handlers import (
+    REGISTRY,
+    HandlerContext,
+    HandlerFailure,
+    RetryableError,
+    generate,
+    noop,
+    wait,
+)
 from aegis.jobs.worker import BACKOFF_MAX_SECONDS, exponential_backoff
-from aegis.policy.rules import MAX_JOB_ATTEMPTS, TASK_KINDS
+from aegis.model_providers.contract import (
+    GenerationRequest,
+    GenerationStoppedError,
+    ModelProviderError,
+    ModelUnavailableError,
+    ProviderProtocolError,
+    ProviderUnavailableError,
+)
+from aegis.model_providers.mock import MOCK_IDENTITY, MockProvider
+from aegis.policy.rules import (
+    GENERATE_SEED,
+    GENERATE_TEMPERATURE,
+    MAX_JOB_ATTEMPTS,
+    MAX_PROMPT_CHARS,
+    TASK_KINDS,
+)
 from aegis.tasks.states import TaskKind
 
+PROMPT = {"prompt": "Name three colours.", "max_output_tokens": 64}
 
-def _context(halted: bool = False) -> HandlerContext:
+
+class RecordingProvider(MockProvider):
+    def __init__(self, failure: ModelProviderError | None = None) -> None:
+        super().__init__(failure=failure)
+        self.requests: list[GenerationRequest] = []
+
+    def generate(self, request: GenerationRequest, stop_requested: Any) -> Any:
+        self.requests.append(request)
+        return super().generate(request, stop_requested)
+
+
+def _context(halted: bool = False, provider: MockProvider | None = None) -> HandlerContext:
     halt = threading.Event()
     if halted:
         halt.set()
-    return HandlerContext(halt)
+    return HandlerContext(halt, provider)
 
 
-def test_the_registry_holds_exactly_noop_and_wait() -> None:
-    assert dict(REGISTRY) == {TaskKind.NOOP: noop, TaskKind.WAIT: wait}
+def test_the_registry_holds_exactly_the_policy_kinds() -> None:
+    assert dict(REGISTRY) == {
+        TaskKind.NOOP: noop,
+        TaskKind.WAIT: wait,
+        TaskKind.GENERATE: generate,
+    }
     assert set(REGISTRY) == set(TaskKind) == TASK_KINDS
     with pytest.raises(TypeError):
         REGISTRY[TaskKind.NOOP] = wait  # type: ignore[index]
@@ -38,7 +77,7 @@ def test_the_registry_holds_exactly_noop_and_wait() -> None:
 def test_the_handler_context_offers_no_database_settings_or_credentials() -> None:
     public = {name for name in dir(HandlerContext) if not name.startswith("_")}
 
-    assert public == {"stop_requested", "wait"}
+    assert public == {"stop_requested", "wait", "generate"}
 
 
 def test_noop_returns_an_empty_result() -> None:
@@ -78,6 +117,93 @@ def test_wait_returns_early_when_halted() -> None:
 def test_wait_refuses_input_the_policy_would_refuse(task_input: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="seconds"):
         wait(task_input, _context())
+
+
+def test_generate_records_the_model_and_fixed_sampling() -> None:
+    provider = RecordingProvider()
+
+    result = generate(PROMPT, _context(provider=provider))
+
+    assert provider.requests == [
+        GenerationRequest("Name three colours.", 64, GENERATE_TEMPERATURE, GENERATE_SEED)
+    ]
+    assert result["text"].startswith("mock-1 reply ")
+    assert {key: result[key] for key in ("provider", "model", "model_digest")} == {
+        "provider": MOCK_IDENTITY.provider,
+        "model": MOCK_IDENTITY.model,
+        "model_digest": MOCK_IDENTITY.digest,
+    }
+    assert (result["finish_reason"], result["temperature"], result["seed"]) == ("stop", 0.0, 0)
+    assert set(result) == {
+        "text",
+        "finish_reason",
+        "provider",
+        "model",
+        "model_digest",
+        "runtime_version",
+        "prompt_tokens",
+        "output_tokens",
+        "duration_ms",
+        "temperature",
+        "seed",
+    }
+
+
+@pytest.mark.parametrize(
+    "task_input",
+    [
+        {},
+        {"prompt": "x"},
+        {"prompt": "", "max_output_tokens": 1},
+        {"prompt": "   ", "max_output_tokens": 1},
+        {"prompt": "p" * (MAX_PROMPT_CHARS + 1), "max_output_tokens": 1},
+        {"prompt": "x", "max_output_tokens": 0},
+        {"prompt": "x", "max_output_tokens": 513},
+        {"prompt": "x", "max_output_tokens": True},
+        {"prompt": "x", "max_output_tokens": 1, "temperature": 1},
+    ],
+)
+def test_generate_refuses_input_the_policy_would_refuse(task_input: dict[str, Any]) -> None:
+    provider = RecordingProvider()
+
+    with pytest.raises(ValueError, match="generate takes"):
+        generate(task_input, _context(provider=provider))
+
+    assert provider.requests == []
+
+
+def test_generate_without_a_provider_fails_the_task() -> None:
+    with pytest.raises(HandlerFailure) as failed:
+        generate(PROMPT, _context())
+
+    assert failed.value.code == "model_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("failure", "raised", "code"),
+    [
+        (ProviderUnavailableError(), RetryableError, "unavailable"),
+        (ModelUnavailableError(code="digest_mismatch"), HandlerFailure, "digest_mismatch"),
+        (ProviderProtocolError(code="tool_call"), HandlerFailure, "tool_call"),
+    ],
+)
+def test_only_an_unavailable_provider_is_retried(
+    failure: ModelProviderError, raised: type[Exception], code: str
+) -> None:
+    with pytest.raises(raised) as stopped:
+        generate(PROMPT, _context(provider=RecordingProvider(failure)))
+
+    assert getattr(stopped.value, "code", str(stopped.value)) == code
+
+
+def test_a_halted_generation_stops_before_the_model_answers() -> None:
+    with pytest.raises(GenerationStoppedError):
+        generate(PROMPT, _context(halted=True, provider=MockProvider(delay_seconds=30)))
+
+
+def test_failure_codes_are_short_lowercase_codes() -> None:
+    assert HandlerFailure("tool_call").code == "tool_call"
+    assert HandlerFailure("Refused: see /etc/passwd").code == "handler_error"
 
 
 def test_worker_settings_have_safe_defaults() -> None:

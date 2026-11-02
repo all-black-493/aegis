@@ -70,6 +70,7 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 | `job.failed` | `attempt`, `error_code` | Increment 10 (the worker, ADR-0009) |
 | `job.interrupted`, `job.fence_lost` | `attempt` | Increment 10 (the worker, ADR-0009) |
 | `job.retried` | `attempt`, `run_after` | Increment 10 (the worker, ADR-0009) |
+| `model.generated` | `provider`, `model`, `model_digest`, `runtime_version`, `prompt_tokens`, `output_tokens`, `duration_ms`, `finish_reason` | Phase 2, Increment 4 (the worker, ADR-0015) |
 
 The increments that emit these events may refine their detail keys through reviewed code changes.
 
