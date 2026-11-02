@@ -10,6 +10,7 @@ AEGIS has implemented **Phase 0** (the local development foundation) and **Phase
 - the authorization rules and the shared security-decision contract;
 - task, decision and history storage whose integrity rules the database enforces;
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
+- the model provider contract and a deterministic, offline mock provider (no task uses a model yet);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling, including a security suite and an end-to-end test;
@@ -88,6 +89,11 @@ Every target exits non-zero on failure.
 | `AEGIS_WORKER_HEARTBEAT_SECONDS` | `5` (not in `.env.example`) | How often a worker renews its lease; at most a third of the lease |
 | `AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS` | `10` (not in `.env.example`) | How long a running task may finish after a stop is requested, 0–300 |
 | `AEGIS_WORKER_MAX_ATTEMPTS` | `3` (not in `.env.example`) | Attempts per task, 1 to the policy's maximum of 10 |
+| `AEGIS_MODEL_PROVIDER` | `mock` (not in `.env.example`) | `mock` (deterministic and offline) or `ollama` (a local Ollama server, available from Phase 2 Increment 2; until then this setting is refused) |
+| `AEGIS_OLLAMA_PORT` | `11436` (not in `.env.example`) | Port of the local Ollama server. The host is always `127.0.0.1`; there is no host setting. |
+| `AEGIS_OLLAMA_MODEL` | none (not in `.env.example`) | Local Ollama model, such as `qwen3:0.6b`; required when the provider is `ollama`. Registry hosts are refused. |
+| `AEGIS_OLLAMA_MODEL_DIGEST` | none (not in `.env.example`) | Optional pin: the model's 64-character digest |
+| `AEGIS_MODEL_TIMEOUT_SECONDS` | `120` (not in `.env.example`) | How long a model call may wait for output, 5–600 |
 | `AEGIS_POSTGRES_USER` | `aegis` | PostgreSQL bootstrap superuser, used only to create roles and databases |
 | `AEGIS_POSTGRES_DB` | `aegis` | PostgreSQL database |
 | `AEGIS_POSTGRES_PASSWORD` | generated | Bootstrap superuser password. Older 48-character values remain valid. |

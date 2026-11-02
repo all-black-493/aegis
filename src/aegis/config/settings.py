@@ -1,3 +1,4 @@
+import re
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -10,11 +11,21 @@ APP_ROLE = "aegis_app"
 DATABASE_HOST = "127.0.0.1"
 API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8000
+# The model server is always local; no setting can point AEGIS at another host.
+MODEL_HOST = "127.0.0.1"
+DEFAULT_OLLAMA_PORT = 11436
+DEFAULT_MODEL_TIMEOUT_SECONDS = 120
 # Mirrors aegis.policy.rules.MAX_JOB_ATTEMPTS, which configuration may not import; a test keeps
 # them equal, and the worker re-checks at startup.
 MAX_WORKER_ATTEMPTS = 10
 MIN_SECRET_LENGTH = 16
 MIN_PEPPER_LENGTH = 32
+# A local name or namespace/name with an optional tag; no registry host, so a pull cannot be
+# redirected to another registry through this setting.
+_OLLAMA_MODEL = re.compile(
+    r"(?:[A-Za-z0-9][A-Za-z0-9_-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?"
+)
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 class Environment(StrEnum):
@@ -73,6 +84,25 @@ class DatabaseSettings:
 @dataclass(frozen=True)
 class ApiSettings:
     port: int
+
+
+class ModelProviderKind(StrEnum):
+    MOCK = "mock"
+    OLLAMA = "ollama"
+
+
+@dataclass(frozen=True)
+class OllamaSettings:
+    port: int
+    model: str
+    digest: str | None
+
+
+@dataclass(frozen=True)
+class ModelSettings:
+    provider: ModelProviderKind = ModelProviderKind.MOCK
+    timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
+    ollama: OllamaSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +185,33 @@ def load_worker_settings(environ: Mapping[str, str]) -> WorkerSettings:
     if problems:
         raise SettingsError(problems)
     return WorkerSettings(poll, lease, heartbeat, grace, int(attempts))
+
+
+def load_model_settings(environ: Mapping[str, str]) -> ModelSettings:
+    problems = unknown_variables(environ)
+    provider = _choice(
+        environ, "AEGIS_MODEL_PROVIDER", ModelProviderKind, ModelProviderKind.MOCK, problems
+    )
+    timeout = _bounded(
+        environ, "AEGIS_MODEL_TIMEOUT_SECONDS", 5, 600, DEFAULT_MODEL_TIMEOUT_SECONDS, problems
+    )
+    port = DEFAULT_OLLAMA_PORT
+    if environ.get("AEGIS_OLLAMA_PORT", "").strip():
+        port = _port(environ, "AEGIS_OLLAMA_PORT", problems)
+    model = environ.get("AEGIS_OLLAMA_MODEL", "").strip()
+    if model and (len(model) > 128 or not _OLLAMA_MODEL.fullmatch(model)):
+        problems.append("AEGIS_OLLAMA_MODEL must be a local model name such as qwen3:0.6b")
+    digest = environ.get("AEGIS_OLLAMA_MODEL_DIGEST", "").strip() or None
+    if digest is not None and not _DIGEST.fullmatch(digest):
+        problems.append("AEGIS_OLLAMA_MODEL_DIGEST must be 64 lowercase hex characters")
+    if provider is ModelProviderKind.OLLAMA and not model:
+        problems.append("AEGIS_OLLAMA_MODEL is required when AEGIS_MODEL_PROVIDER is ollama")
+    if problems:
+        raise SettingsError(problems)
+    ollama = None
+    if provider is ModelProviderKind.OLLAMA:
+        ollama = OllamaSettings(port, model, digest)
+    return ModelSettings(provider, timeout, ollama)
 
 
 def load_token_pepper(environ: Mapping[str, str]) -> Secret:
