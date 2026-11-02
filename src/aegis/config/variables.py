@@ -95,6 +95,11 @@ VARIABLES = (
         in_template=False,
     ),
     Variable(
+        "AEGIS_OPENSHELL_IMAGE",
+        "image ID of the probe image, printed by `make openshell-image`",
+        in_template=False,
+    ),
+    Variable(
         "AEGIS_TOKEN_PEPPER",
         "server-side key for hashing API tokens (API, administration)",
         secret=True,

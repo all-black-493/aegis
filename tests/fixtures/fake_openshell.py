@@ -51,7 +51,10 @@ def prover(state, args):
     if args == ["--version"]:
         print("openshell-prover " + state["prover_version"])
         return
-    verdict = dict(state["verdict"])
+    state["proven"].append(Path(args[1]).read_text())
+    sequence = state["verdict_sequence"]
+    verdict = dict(sequence.pop(0) if sequence else state["verdict"])
+    save(state)
     verdict.setdefault("schema_version", 1)
     verdict.setdefault("prover_version", state["prover_version"])
     print(json.dumps(verdict))
@@ -109,7 +112,10 @@ def openshell(state, args):
         sandbox = sandboxes.get(rest[0])
         if sandbox is None or sandbox["workspace"] != workspace:
             fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
-        print(sandbox["policy"] if "--policy-only" in rest else json.dumps(record(sandbox)))
+        if "--policy-only" in rest:
+            print(state["effective_policy"] or sandbox["policy"])
+        else:
+            print(json.dumps(record(sandbox)))
     elif command == ["sandbox", "list"]:
         mine = [s for s in sandboxes.values() if s["workspace"] == workspace]
         key, value = option(rest, "--selector").split("=", 1)
@@ -170,6 +176,9 @@ DEFAULT_STATE: dict[str, Any] = {
     "delete_lingers": False,
     "sandboxes": {},
     "exec": {},
+    "effective_policy": None,
+    "verdict_sequence": [],
+    "proven": [],
     "verdict": {
         "result": "within_boundary",
         "exit_code": 0,

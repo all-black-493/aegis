@@ -100,6 +100,13 @@ def next_expired(connection: Connection) -> tuple[UUID, UUID] | None:
     return None if row is None else (row[0], row[1])
 
 
+def live_job_ids(connection: Connection) -> frozenset[UUID]:
+    rows = connection.execute(
+        select(jobs.c.id).where(_running(), jobs.c.lease_expires_at > func.now())
+    )
+    return frozenset(rows.scalars())
+
+
 def lock_job(connection: Connection, job_id: UUID) -> JobRecord | None:
     row = (
         connection.execute(select(jobs).where(jobs.c.id == job_id).with_for_update(key_share=True))
