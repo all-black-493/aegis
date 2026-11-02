@@ -6,7 +6,8 @@ UV ?= uv
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ENVTOOL = $(UV) run --project $(ROOT) --locked python -m aegis.config.envtool
 
-.PHONY: help setup env-file env-upgrade doctor up up-local-ai model-pull openshell-init migrate \
+.PHONY: help setup env-file env-upgrade doctor up up-local-ai model-pull openshell-init \
+	openshell-image migrate \
 	api worker down test test-integration test-security test-local-ai test-openshell lint format \
 	typecheck check require-uv require-env
 
@@ -38,6 +39,10 @@ model-pull: require-uv require-env ## Download AEGIS_OLLAMA_MODEL into the local
 
 openshell-init: require-uv require-env ## Create AEGIS's OpenShell workspace and check the runtime (needs OpenShell 0.1.6)
 	$(UV) run --locked --env-file .env aegis openshell init
+
+openshell-image: ## Build the OpenShell probe image offline from the local ubuntu:24.04 and print its ID
+	docker build --pull=false --network none --quiet --tag aegis-openshell-probe:1 deploy/openshell/probe >/dev/null
+	@echo "AEGIS_OPENSHELL_IMAGE=$$(docker image inspect --format '{{.Id}}' aegis-openshell-probe:1)"
 
 migrate: require-uv require-env ## Create or update database roles, then apply migrations
 	$(UV) run --locked --env-file .env aegis db bootstrap

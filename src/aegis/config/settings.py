@@ -31,6 +31,8 @@ _DIGEST = re.compile(r"[0-9a-f]{64}")
 _OPENSHELL_GATEWAY = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 # OpenShell workspace names are DNS-1123 labels of at most 19 characters.
 _OPENSHELL_WORKSPACE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?")
+# A local image ID, so the sandbox runs exactly the image that was built, never a moved tag.
+_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class Environment(StrEnum):
@@ -119,6 +121,7 @@ class SandboxRuntimeKind(StrEnum):
 class OpenShellSettings:
     gateway: str = DEFAULT_OPENSHELL_GATEWAY
     workspace: str = DEFAULT_OPENSHELL_WORKSPACE
+    image: str | None = None
 
 
 @dataclass(frozen=True)
@@ -249,9 +252,12 @@ def load_runtime_settings(environ: Mapping[str, str]) -> RuntimeSettings:
     elif workspace == "default":
         # The default workspace holds sandboxes that are not AEGIS's (ADR-0016).
         problems.append("AEGIS_OPENSHELL_WORKSPACE must not be the default workspace")
+    image = environ.get("AEGIS_OPENSHELL_IMAGE", "").strip() or None
+    if image is not None and not _IMAGE_ID.fullmatch(image):
+        problems.append("AEGIS_OPENSHELL_IMAGE must be an image ID from `make openshell-image`")
     if problems:
         raise SettingsError(problems)
-    return RuntimeSettings(runtime, OpenShellSettings(gateway, workspace))
+    return RuntimeSettings(runtime, OpenShellSettings(gateway, workspace, image))
 
 
 def load_token_pepper(environ: Mapping[str, str]) -> Secret:

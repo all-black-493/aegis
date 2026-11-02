@@ -1,0 +1,13 @@
+# The most any AEGIS sandbox may be granted (ADR-0017). The prover checks every sandbox's
+# submitted and effective policy against this file. Any change here changes the sandbox policy
+# fingerprint, which a test pins.
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only: [/usr, /lib, /etc, /proc, /dev/urandom]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: hard_requirement
+process:
+  run_as_user: "2000"
+  run_as_group: "2000"

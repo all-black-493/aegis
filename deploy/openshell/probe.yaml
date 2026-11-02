@@ -1,0 +1,13 @@
+# The probe sandbox's policy (ADR-0017): the image's probe user (UID 2000), Landlock enforced or
+# no sandbox, system paths read-only, /tmp writable, and no network rules, so all egress is
+# denied.
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only: [/usr, /lib, /etc, /proc, /dev/urandom]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: hard_requirement
+process:
+  run_as_user: "2000"
+  run_as_group: "2000"

@@ -16,13 +16,17 @@ from aegis.config.settings import (
     load_common_settings,
     load_database_settings,
     load_model_settings,
+    load_runtime_settings,
     load_worker_settings,
 )
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import schema_status
+from aegis.jobs.sandboxes import clean_orphaned_sandboxes
 from aegis.jobs.worker import Worker
 from aegis.model_providers.factory import build_provider
 from aegis.policy.rules import MAX_JOB_ATTEMPTS
+from aegis.runtime.contract import SandboxRuntimeError
+from aegis.runtime.factory import build_runtime
 
 logger = logging.getLogger("aegis.worker")
 
@@ -34,6 +38,7 @@ def main() -> int:
         settings = load_worker_settings(environ)
         database = load_database_settings(environ, DatabaseRole.APP)
         model = load_model_settings(environ)
+        sandboxes = load_runtime_settings(environ)
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -54,6 +59,8 @@ def main() -> int:
             "model provider unavailable",
             extra={"provider": model.provider.value, "detail": status.detail},
         )
+    runtime = build_runtime(sandboxes)
+    recorder = AuditRecorder(Redactor([secret]))
     engine = create_database_engine(database, application_name="aegis-worker")
     try:
         try:
@@ -73,7 +80,12 @@ def main() -> int:
 
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
-        Worker(engine, AuditRecorder(Redactor([secret])), settings, provider=provider).run(stop)
+        try:
+            clean_orphaned_sandboxes(engine, recorder, runtime)
+        except SandboxRuntimeError as error:
+            # No sandbox can be created while the runtime is unusable, so cleanup can wait.
+            logger.warning("sandbox cleanup skipped", extra={"detail": error.code})
+        Worker(engine, recorder, settings, provider=provider).run(stop)
     finally:
         engine.dispose()
     return 0

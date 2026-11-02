@@ -29,6 +29,8 @@ HEALTHY_MODEL = ProviderStatus(
     identity=ModelIdentity("ollama", "qwen3:0.6b", MODEL_DIGEST, "0.34.2"),
 )
 OLLAMA = {"AEGIS_MODEL_PROVIDER": "ollama", "AEGIS_OLLAMA_MODEL": "qwen3:0.6b"}
+PROBE_IMAGE = "sha256:" + "e" * 64
+PROBE_IMAGE_INSPECT = ("docker", "image", "inspect", "--format", "{{.Id}}", PROBE_IMAGE)
 UV_VERSION = ("uv", "--version")
 DOCKER_INFO = ("docker", "info", "--format", "{{json .}}")
 COMPOSE_VERSION = ("docker", "compose", "version", "--short")
@@ -67,6 +69,7 @@ def _default_commands() -> dict[tuple[str, ...], CommandResult]:
         COMPOSE_VERSION: _ok("2.38.2\n"),
         COMPOSE_PS: _ps(),
         SCHEMA_VERSION: _ok(f"{head_revision()}\n"),
+        PROBE_IMAGE_INSPECT: _ok(f"{PROBE_IMAGE}\n"),
     }
 
 
@@ -618,7 +621,7 @@ def test_the_model_check_waits_for_a_valid_env_file(system: FakeSystem, root: Pa
     assert system.model_settings == []
 
 
-OPENSHELL = {"AEGIS_SANDBOX_RUNTIME": "openshell"}
+OPENSHELL = {"AEGIS_SANDBOX_RUNTIME": "openshell", "AEGIS_OPENSHELL_IMAGE": PROBE_IMAGE}
 
 
 def test_a_disabled_runtime_is_skipped_and_refuses_sandbox_tasks(
@@ -638,7 +641,9 @@ def test_a_configured_openshell_is_required_and_identified(system: FakeSystem, r
 
     check = result(diagnosis, "NVIDIA OpenShell")
     assert (check.requirement, check.status) == (Requirement.REQUIRED, Status.PASS)
-    assert check.detail == "0.1.6 via gateway openshell, workspace aegis, Landlock ABI 8"
+    assert check.detail == (
+        "0.1.6 via gateway openshell, workspace aegis, Landlock ABI 8, probe image eeeeeeeeeeee"
+    )
     [settings] = system.runtime_settings
     assert settings.runtime is SandboxRuntimeKind.OPENSHELL
     assert diagnosis.exit_code == 0
@@ -689,3 +694,22 @@ def test_an_invalid_runtime_setting_fails_the_env_check(system: FakeSystem, root
 
     assert result(diagnosis, ".env configuration").status is Status.FAIL
     assert result(diagnosis, "NVIDIA OpenShell").status is Status.SKIP
+
+
+def test_openshell_needs_the_probe_image_to_be_configured(system: FakeSystem, root: Path) -> None:
+    write_env(root, AEGIS_SANDBOX_RUNTIME="openshell")
+
+    check = result(run_checks(system, root), "NVIDIA OpenShell")
+
+    assert (check.status, check.requirement) == (Status.FAIL, Requirement.REQUIRED)
+    assert "make openshell-image" in check.detail
+
+
+def test_openshell_needs_the_probe_image_to_be_present(system: FakeSystem, root: Path) -> None:
+    write_env(root, **OPENSHELL)
+    system.commands[PROBE_IMAGE_INSPECT] = CommandResult(1, "", "No such image")
+
+    check = result(run_checks(system, root), "NVIDIA OpenShell")
+
+    assert check.status is Status.FAIL
+    assert "probe image is not present" in check.detail

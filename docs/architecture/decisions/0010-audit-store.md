@@ -71,6 +71,8 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 | `job.interrupted`, `job.fence_lost` | `attempt` | Increment 10 (the worker, ADR-0009) |
 | `job.retried` | `attempt`, `run_after` | Increment 10 (the worker, ADR-0009) |
 | `model.generated` | `provider`, `model`, `model_digest`, `runtime_version`, `prompt_tokens`, `output_tokens`, `duration_ms`, `finish_reason` | Phase 2, Increment 4 (the worker, ADR-0015) |
+| `sandbox.created` | `sandbox_id`, `runtime_version`, `image`, `policy_version`, `policy_fingerprint`, `policy_hash`, `prover_result` | Phase 3, Increment 2 (the sandbox gate, ADR-0017) |
+| `sandbox.deleted` | `task`, `job` (orphans only) | Phase 3, Increment 2 (the sandbox gate and orphan cleanup, ADR-0017) |
 
 The increments that emit these events may refine their detail keys through reviewed code changes.
 

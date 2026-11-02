@@ -35,6 +35,8 @@ class AuditEventType(StrEnum):
     JOB_RETRIED = "job.retried"
     JOB_FENCE_LOST = "job.fence_lost"
     MODEL_GENERATED = "model.generated"
+    SANDBOX_CREATED = "sandbox.created"
+    SANDBOX_DELETED = "sandbox.deleted"
 
 
 class Source(StrEnum):
@@ -89,6 +91,18 @@ ALLOWED_DETAILS: Mapping[AuditEventType, frozenset[str]] = MappingProxyType(
                 "finish_reason",
             }
         ),
+        AuditEventType.SANDBOX_CREATED: frozenset(
+            {
+                "sandbox_id",
+                "runtime_version",
+                "image",
+                "policy_version",
+                "policy_fingerprint",
+                "policy_hash",
+                "prover_result",
+            }
+        ),
+        AuditEventType.SANDBOX_DELETED: frozenset({"task", "job"}),
     }
 )
 

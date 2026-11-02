@@ -507,11 +507,26 @@ def check_sandbox_runtime(system: System, env_values: dict[str, str] | None) -> 
         hint = _RUNTIME_HINTS.get(status.detail, "see ADR-0016")
         return CheckResult(name, REQUIRED, FAIL, f"{status.detail}; {hint}")
     openshell = settings.openshell
+    image_problem = _probe_image_problem(system, openshell.image)
+    if image_problem is not None:
+        return CheckResult(name, REQUIRED, FAIL, image_problem)
     detail = (
         f"{status.version} via gateway {openshell.gateway}, workspace {openshell.workspace},"
-        f" Landlock ABI {abi}"
+        f" Landlock ABI {abi}, probe image {(openshell.image or '')[7:19]}"
     )
     return CheckResult(name, REQUIRED, PASS, detail)
+
+
+def _probe_image_problem(system: System, image: str | None) -> str | None:
+    if image is None:
+        return "AEGIS_OPENSHELL_IMAGE is not set; run `make openshell-image` and add its output"
+    docker = system.which("docker")
+    if docker is None:
+        return "the Docker CLI is needed to find the probe image"
+    found = system.run([docker, "image", "inspect", "--format", "{{.Id}}", image], Path.cwd())
+    if found.returncode != 0 or found.stdout.strip() != image:
+        return "the probe image is not present; run `make openshell-image`"
+    return None
 
 
 def _first_line(text: str) -> str:

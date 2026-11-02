@@ -54,11 +54,13 @@ def test_openshell_settings_are_parsed() -> None:
             "AEGIS_SANDBOX_RUNTIME": "openshell",
             "AEGIS_OPENSHELL_GATEWAY": "lab-gateway",
             "AEGIS_OPENSHELL_WORKSPACE": "aegis-ci",
+            "AEGIS_OPENSHELL_IMAGE": "sha256:" + "b" * 64,
         }
     )
 
     assert settings == RuntimeSettings(
-        SandboxRuntimeKind.OPENSHELL, OpenShellSettings("lab-gateway", "aegis-ci")
+        SandboxRuntimeKind.OPENSHELL,
+        OpenShellSettings("lab-gateway", "aegis-ci", "sha256:" + "b" * 64),
     )
 
 
@@ -72,6 +74,9 @@ def test_openshell_settings_are_parsed() -> None:
         ("AEGIS_OPENSHELL_WORKSPACE", "a-workspace-name-too-long"),
         ("AEGIS_OPENSHELL_WORKSPACE", "-aegis"),
         ("AEGIS_OPENSHELL_ENDPOINT", "https://10.0.0.1:17670"),
+        ("AEGIS_OPENSHELL_IMAGE", "aegis-openshell-probe:1"),
+        ("AEGIS_OPENSHELL_IMAGE", "ubuntu@sha256:" + "b" * 64),
+        ("AEGIS_OPENSHELL_IMAGE", "sha256:" + "B" * 64),
     ],
 )
 def test_invalid_runtime_settings_are_refused(name: str, value: str) -> None:
