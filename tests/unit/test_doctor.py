@@ -14,7 +14,8 @@ from aegis.config.settings import (
 from aegis.config.variables import TEMPLATE_NAMES
 from aegis.db.migrate import head_revision
 from aegis.doctor.__main__ import main
-from aegis.doctor.checks import GIB, run_checks
+from aegis.doctor.checks import run_checks
+from aegis.doctor.host import GIB
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
 from aegis.doctor.report import REDACTED, render
 from aegis.doctor.system import CommandResult, Memory

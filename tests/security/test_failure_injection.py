@@ -1,60 +1,44 @@
 import logging
 import os
-import socket
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Connection, Engine, event, text
+from sqlalchemy import Connection, Engine, event
 from sqlalchemy.exc import OperationalError
 
 from aegis.apps.api.app import create_app
 from aegis.apps.api.context import ApiContext
 from aegis.audit.events import AuditEvent, AuditEventType
 from aegis.audit.recorder import AuditRecorder
-from aegis.authorization.access import ActorContext
-from aegis.authorization.catalog import IdentityKind, Role
 from aegis.config.logs import Redactor
-from aegis.config.settings import DatabaseSettings, Environment, WorkerSettings, load_token_pepper
+from aegis.config.settings import DatabaseSettings, Environment, WorkerSettings
 from aegis.db.admin import bootstrap, recreate_test_database
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import upgrade
-from aegis.identity.admin import IdentityAdministration
 from aegis.jobs.handlers import REGISTRY, HandlerContext
 from aegis.jobs.worker import Settled, Worker
 from aegis.policy.facts import ExecutionFacts, SubmissionFacts
 from aegis.policy.rules import Outcome
 from aegis.policy.service import DecisionService
 from aegis.policy.version import CURRENT_POLICY
-from aegis.tasks.repository import TaskRecord, get_task
+from aegis.tasks.repository import TaskRecord
 from aegis.tasks.service import AccessDeniedError, Submission, TaskService
 from aegis.tasks.states import TaskKind, TaskState
+from tests.fixtures import records
+from tests.fixtures.processes import unused_port
+from tests.fixtures.services import FAST_WORKER, PEPPER, RECORDER, Caller
 
-PEPPER = load_token_pepper(os.environ)
-RECORDER = AuditRecorder(Redactor([PEPPER.reveal()]))
-FAST = WorkerSettings(
-    poll_seconds=0.05,
-    lease_seconds=10,
-    heartbeat_seconds=0.1,
-    shutdown_grace_seconds=0.3,
-    max_attempts=3,
-)
 TOKEN = "aegis_pat_" + "a" * 26 + "_" + "b" * 52
 S = TaskState
 pytestmark = pytest.mark.usefixtures("isolated_jobs")
-
-
-@dataclass(frozen=True)
-class Caller:
-    name: str
-    actor: ActorContext
 
 
 class Spy:
@@ -78,21 +62,8 @@ class FailingWhen(AuditRecorder):
 
 
 @pytest.fixture
-def operator(owner_engine: Engine) -> Caller:
-    name = f"failure-{uuid4().hex[:12]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, [Role.OPERATOR])
-        issued = administration.issue_credential(name, PEPPER)
-    roles = frozenset({Role.OPERATOR})
-    return Caller(name, ActorContext(identity_id, IdentityKind.HUMAN, roles, issued.credential_id))
-
-
-@pytest.fixture
 def dead_engine(app_settings: DatabaseSettings) -> Iterator[Engine]:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
+    port = unused_port()
     engine = create_database_engine(
         replace(app_settings, port=port), application_name="aegis-tests"
     )
@@ -115,31 +86,14 @@ def _submit(
 def _worker(
     engine: Engine,
     recorder: AuditRecorder = RECORDER,
-    settings: WorkerSettings = FAST,
+    settings: WorkerSettings = FAST_WORKER,
     **kwargs: Any,
 ) -> Worker:
     return Worker(engine, recorder, settings, backoff=lambda _: 0, **kwargs)
 
 
-def _task(app_engine: Engine, task_id: UUID) -> TaskRecord:
-    with app_engine.connect() as connection:
-        task = get_task(connection, task_id)
-    assert task is not None
-    return task
-
-
-def _rows(owner_engine: Engine, sql: str, **params: Any) -> list[dict[str, Any]]:
-    with owner_engine.connect() as connection:
-        return [dict(row) for row in connection.execute(text(sql), params).mappings()]
-
-
-def _job(owner_engine: Engine, task_id: UUID) -> dict[str, Any]:
-    [job] = _rows(owner_engine, "SELECT * FROM aegis.jobs WHERE task_id = :id", id=task_id)
-    return job
-
-
 def _moves(owner_engine: Engine, task_id: UUID) -> list[tuple[str, str]]:
-    rows = _rows(
+    rows = records.rows(
         owner_engine,
         "SELECT from_state, to_state FROM aegis.task_state_transitions WHERE task_id = :id"
         " ORDER BY to_version",
@@ -198,7 +152,9 @@ def test_an_outage_during_a_run_discards_the_result_and_recovery_retries_the_tas
             raise OperationalError("SELECT 1", {}, Exception("connection lost"))
 
     try:
-        cut_off = _worker(flaky, settings=replace(FAST, lease_seconds=1, heartbeat_seconds=0.2))
+        cut_off = _worker(
+            flaky, settings=replace(FAST_WORKER, lease_seconds=1, heartbeat_seconds=0.2)
+        )
         claimed = cut_off.claim()
         assert not isinstance(claimed, Settled)
         assert claimed is not None
@@ -210,20 +166,20 @@ def test_an_outage_during_a_run_discards_the_result_and_recovery_retries_the_tas
         flaky.dispose()
 
     assert gave_up_after < 2
-    assert _task(app_engine, task.task_id).state is S.RUNNING
+    assert records.task(app_engine, task.task_id).state is S.RUNNING
     assert ("running", "succeeded") not in _moves(owner_engine, task.task_id)
 
     time.sleep(0.5)
     assert _worker(app_engine).step(threading.Event())
 
-    assert _task(app_engine, task.task_id).state is S.SUCCEEDED
+    assert records.task(app_engine, task.task_id).state is S.SUCCEEDED
     assert _moves(owner_engine, task.task_id)[2:] == [
         ("running", "interrupted"),
         ("interrupted", "queued"),
         ("queued", "running"),
         ("running", "succeeded"),
     ]
-    assert _job(owner_engine, task.task_id)["attempt"] == 2
+    assert records.latest_job(owner_engine, task.task_id)["attempt"] == 2
 
 
 def test_an_audit_failure_at_claim_leaves_the_task_queued_and_unrun(
@@ -239,11 +195,11 @@ def test_an_audit_failure_at_claim_leaves_the_task_queued_and_unrun(
     )
 
     assert spy.calls == 0
-    assert _task(app_engine, task.task_id).state is S.QUEUED
-    job = _job(owner_engine, task.task_id)
+    assert records.task(app_engine, task.task_id).state is S.QUEUED
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["attempt"]) == ("pending", 0)
     assert (
-        _rows(
+        records.rows(
             owner_engine,
             "SELECT id FROM aegis.security_decisions"
             " WHERE task_id = :id AND action = 'task.execute'",
@@ -253,7 +209,7 @@ def test_an_audit_failure_at_claim_leaves_the_task_queued_and_unrun(
     )
 
     assert _worker(app_engine).step(threading.Event())
-    assert _task(app_engine, task.task_id).state is S.SUCCEEDED
+    assert records.task(app_engine, task.task_id).state is S.SUCCEEDED
 
 
 def test_an_audit_failure_at_completion_commits_nothing_and_the_task_is_retried(
@@ -262,14 +218,17 @@ def test_an_audit_failure_at_completion_commits_nothing_and_the_task_is_retried(
     task = _submit(app_engine, operator)
     failing = FailingWhen(lambda event: event.details.get("to_state") == "succeeded")
 
-    _worker(app_engine, failing, replace(FAST, lease_seconds=0.5)).step(threading.Event())
+    _worker(app_engine, failing, replace(FAST_WORKER, lease_seconds=0.5)).step(threading.Event())
 
-    assert _task(app_engine, task.task_id).state is S.RUNNING
+    assert records.task(app_engine, task.task_id).state is S.RUNNING
     assert ("running", "succeeded") not in _moves(owner_engine, task.task_id)
     time.sleep(0.6)
     assert _worker(app_engine).step(threading.Event())
-    final = _task(app_engine, task.task_id)
-    assert (final.state, _job(owner_engine, task.task_id)["attempt"]) == (S.SUCCEEDED, 2)
+    final = records.task(app_engine, task.task_id)
+    assert (final.state, records.latest_job(owner_engine, task.task_id)["attempt"]) == (
+        S.SUCCEEDED,
+        2,
+    )
 
 
 def _boom(_facts: SubmissionFacts | ExecutionFacts) -> Outcome | None:
@@ -286,14 +245,14 @@ def test_an_evaluator_error_at_submission_is_a_saved_denial(
 
     decision = denied.value.decision
     assert decision.reason_codes == ("evaluation_error",)
-    [saved] = _rows(
+    [saved] = records.rows(
         owner_engine,
         "SELECT effect, task_id FROM aegis.security_decisions WHERE id = :id",
         id=decision.decision_id,
     )
     assert saved == {"effect": "deny", "task_id": None}
     assert (
-        _rows(
+        records.rows(
             owner_engine,
             "SELECT id FROM aegis.tasks WHERE initiator_id = :id",
             id=operator.actor.identity_id,

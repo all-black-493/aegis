@@ -1,17 +1,14 @@
 import os
-import socket
 from collections.abc import Iterator
 
 import pytest
 
-from tests.fixtures.processes import Process
+from tests.fixtures.processes import Process, unused_port
 
 
 @pytest.fixture
 def environ(test_database: str) -> dict[str, str]:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
+    port = unused_port()
     return {
         **os.environ,
         "AEGIS_ENV": "production",

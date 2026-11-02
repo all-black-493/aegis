@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -18,18 +18,14 @@ from sqlalchemy.exc import DBAPIError
 
 from aegis.apps.api.app import create_app
 from aegis.apps.api.context import ApiContext
-from aegis.audit.recorder import AuditRecorder
-from aegis.authorization.access import ActorContext
-from aegis.authorization.catalog import IdentityKind, Role
+from aegis.authorization.catalog import Role
 from aegis.authorization.contract import Effect
-from aegis.config.logs import Redactor
 from aegis.config.settings import (
     DatabaseRole,
     DatabaseSettings,
     Environment,
     WorkerSettings,
     load_database_settings,
-    load_token_pepper,
 )
 from aegis.identity.admin import IdentityAdministration
 from aegis.identity.schema import SYSTEM_CLI_ID, SYSTEM_WORKER_ID
@@ -40,33 +36,16 @@ from aegis.jobs.worker import Claim, Settled, Worker
 from aegis.policy.rules import MAX_JOB_ATTEMPTS, Outcome
 from aegis.policy.service import DecisionService
 from aegis.policy.version import CURRENT_POLICY
-from aegis.tasks.repository import TaskRecord, get_task
+from aegis.tasks.repository import TaskRecord
 from aegis.tasks.service import Submission, TaskService
 from aegis.tasks.states import TaskKind, TaskState
 from aegis.tasks.transitions import JobRef
+from tests.fixtures import records
+from tests.fixtures.processes import wait_for
+from tests.fixtures.services import FAST_WORKER, PEPPER, RECORDER, Caller
 
-PEPPER = load_token_pepper(os.environ)
-RECORDER = AuditRecorder(Redactor([PEPPER.reveal()]))
-FAST = WorkerSettings(
-    poll_seconds=0.05,
-    lease_seconds=10,
-    heartbeat_seconds=0.1,
-    shutdown_grace_seconds=0.3,
-    max_attempts=3,
-)
 S = TaskState
 pytestmark = pytest.mark.usefixtures("isolated_jobs")
-
-
-@dataclass(frozen=True)
-class Caller:
-    name: str
-    actor: ActorContext
-    token: str
-
-    @property
-    def id(self) -> UUID:
-        return self.actor.identity_id
 
 
 class Spy:
@@ -79,24 +58,9 @@ class Spy:
         return self._behaviour(task_input, context)
 
 
-@pytest.fixture
-def operator(owner_engine: Engine) -> Caller:
-    return _caller(owner_engine, Role.OPERATOR)
-
-
-def _caller(owner_engine: Engine, *roles: Role) -> Caller:
-    name = f"worker-test-{uuid4().hex[:12]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, roles)
-        issued = administration.issue_credential(name, PEPPER)
-    actor = ActorContext(identity_id, IdentityKind.HUMAN, frozenset(roles), issued.credential_id)
-    return Caller(name, actor, issued.token.reveal())
-
-
 def _worker(
     app_engine: Engine,
-    settings: WorkerSettings = FAST,
+    settings: WorkerSettings = FAST_WORKER,
     handlers: Mapping[TaskKind, Handler] = REGISTRY,
     **kwargs: Any,
 ) -> Worker:
@@ -114,30 +78,8 @@ def _submit(
     return TaskService(app_engine, RECORDER).submit(caller.actor, submission, uuid4().hex).task
 
 
-def _task(app_engine: Engine, task_id: UUID) -> TaskRecord:
-    with app_engine.connect() as connection:
-        task = get_task(connection, task_id)
-    assert task is not None
-    return task
-
-
-def _rows(owner_engine: Engine, sql: str, **params: Any) -> list[dict[str, Any]]:
-    with owner_engine.connect() as connection:
-        return [dict(row) for row in connection.execute(text(sql), params).mappings()]
-
-
-def _job(owner_engine: Engine, task_id: UUID) -> dict[str, Any]:
-    rows = _rows(
-        owner_engine,
-        "SELECT * FROM aegis.jobs WHERE task_id = :id ORDER BY created_at DESC",
-        id=task_id,
-    )
-    assert rows, "the task has no job"
-    return rows[0]
-
-
 def _history(owner_engine: Engine, task_id: UUID) -> list[tuple[Any, ...]]:
-    rows = _rows(
+    rows = records.rows(
         owner_engine,
         "SELECT from_state, to_state, actor_id, job_attempt, reason_code"
         " FROM aegis.task_state_transitions WHERE task_id = :id ORDER BY to_version",
@@ -146,17 +88,8 @@ def _history(owner_engine: Engine, task_id: UUID) -> list[tuple[Any, ...]]:
     return [tuple(row.values()) for row in rows]
 
 
-def _events(owner_engine: Engine, task_id: UUID) -> list[str]:
-    rows = _rows(
-        owner_engine,
-        "SELECT event_type FROM aegis.audit_events WHERE task_id = :id ORDER BY id",
-        id=task_id,
-    )
-    return [row["event_type"] for row in rows]
-
-
 def _execution_decisions(owner_engine: Engine, task_id: UUID) -> list[dict[str, Any]]:
-    return _rows(
+    return records.rows(
         owner_engine,
         "SELECT * FROM aegis.security_decisions WHERE task_id = :id AND action = 'task.execute'"
         " ORDER BY job_attempt",
@@ -171,14 +104,6 @@ def _refused(
         connection.execute(text(sql), params)
     assert isinstance(excinfo.value.orig, error), excinfo.value.orig
     assert match in str(excinfo.value.orig)
-
-
-def _wait_for(condition: Callable[[], bool], timeout: float, what: str) -> None:
-    deadline = time.monotonic() + timeout
-    while not condition():
-        if time.monotonic() > deadline:
-            pytest.fail(f"timed out waiting for {what}")
-        time.sleep(0.05)
 
 
 def _claimed(worker: Worker) -> Claim:
@@ -217,7 +142,7 @@ def test_a_submitted_task_runs_to_succeeded_with_a_complete_audit_chain(
         ("queued", "running", SYSTEM_WORKER_ID, 1, "execution_allowed"),
         ("running", "succeeded", SYSTEM_WORKER_ID, 1, "completed"),
     ]
-    assert _events(owner_engine, task_id) == [
+    assert records.task_events(owner_engine, task_id) == [
         "security.decision",
         "task.created",
         "task.transitioned",
@@ -232,7 +157,7 @@ def test_a_submitted_task_runs_to_succeeded_with_a_complete_audit_chain(
         operator.id,
     )
     assert (execution["actor_credential_id"], execution["job_attempt"]) == (None, 1)
-    job = _job(owner_engine, task_id)
+    job = records.latest_job(owner_engine, task_id)
     assert (job["state"], job["attempt"], job["last_error_code"]) == ("finished", 1, None)
     assert job["correlation_id"] == submitted.headers["x-request-id"]
 
@@ -256,7 +181,7 @@ def test_racing_workers_claim_a_job_exactly_once(
     claims = [outcome for outcome in outcomes if isinstance(outcome, Claim)]
     assert len(claims) == 1
     assert outcomes.count(None) == len(workers) - 1
-    job = _job(owner_engine, task.task_id)
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["attempt"]) == ("running", 1)
     assert job["lease_owner"] in {worker.owner for worker in workers}
 
@@ -266,7 +191,9 @@ def test_a_stale_worker_cannot_heartbeat_complete_or_write_history(
 ) -> None:
     task = _submit(app_engine, operator)
     spy = Spy()
-    stale = _worker(app_engine, replace(FAST, lease_seconds=0.5), _every_kind(spy), owner="stale")
+    stale = _worker(
+        app_engine, replace(FAST_WORKER, lease_seconds=0.5), _every_kind(spy), owner="stale"
+    )
     claim = _claimed(stale)
     time.sleep(0.7)
 
@@ -294,8 +221,8 @@ def test_a_stale_worker_cannot_heartbeat_complete_or_write_history(
     )
     stale.execute(claim, threading.Event())
     assert spy.calls == 1
-    assert _task(app_engine, task.task_id).state is S.RUNNING
-    assert "job.fence_lost" in _events(owner_engine, task.task_id)
+    assert records.task(app_engine, task.task_id).state is S.RUNNING
+    assert "job.fence_lost" in records.task_events(owner_engine, task.task_id)
 
     fresh = _worker(app_engine)
     assert fresh.recover() == 1
@@ -314,8 +241,8 @@ def test_a_stale_worker_cannot_heartbeat_complete_or_write_history(
     with app_engine.begin() as connection:
         assert jobs_repository.renew(connection, claim.job, 10) is None
     stale.execute(claim, threading.Event())
-    assert _task(app_engine, task.task_id).state is S.RUNNING
-    assert _job(owner_engine, task.task_id)["attempt"] == 2
+    assert records.task(app_engine, task.task_id).state is S.RUNNING
+    assert records.latest_job(owner_engine, task.task_id)["attempt"] == 2
 
 
 @pytest.mark.parametrize(
@@ -382,9 +309,9 @@ def test_initiator_changes_before_the_claim_fail_the_task_without_running_it(
     [decision] = _execution_decisions(owner_engine, task.task_id)
     assert (decision["effect"], decision["reason_codes"]) == ("deny", [reason])
     assert (decision["actor_id"], decision["subject_id"]) == (SYSTEM_WORKER_ID, operator.id)
-    job = _job(owner_engine, task.task_id)
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["last_error_code"]) == ("finished", reason)
-    assert _events(owner_engine, task.task_id)[-1] == "job.failed"
+    assert records.task_events(owner_engine, task.task_id)[-1] == "job.failed"
 
 
 def test_an_executor_without_the_worker_role_fails_the_task(
@@ -433,7 +360,7 @@ def test_approval_required_at_claim_holds_the_task(
     assert isinstance(outcome, Settled)
     assert outcome.task.state is S.AWAITING_APPROVAL
     assert spy.calls == 0
-    job = _job(owner_engine, task.task_id)
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["last_error_code"]) == ("finished", "approval_required")
 
 
@@ -474,7 +401,7 @@ def test_cancellation_is_noticed_at_the_next_heartbeat(
     assert cancelled.pending
     assert not thread.is_alive()
     assert time.monotonic() - started < 5
-    assert _task(app_engine, task.task_id).state is S.CANCELLED
+    assert records.task(app_engine, task.task_id).state is S.CANCELLED
     assert _history(owner_engine, task.task_id)[-1] == (
         "running",
         "cancelled",
@@ -482,7 +409,7 @@ def test_cancellation_is_noticed_at_the_next_heartbeat(
         1,
         "cancel_requested",
     )
-    assert _job(owner_engine, task.task_id)["last_error_code"] == "cancelled"
+    assert records.latest_job(owner_engine, task.task_id)["last_error_code"] == "cancelled"
 
 
 def test_a_disabled_initiator_stops_a_running_task(
@@ -498,7 +425,7 @@ def test_a_disabled_initiator_stops_a_running_task(
     thread.join(10)
 
     assert not thread.is_alive()
-    final = _task(app_engine, task.task_id)
+    final = records.task(app_engine, task.task_id)
     assert (final.state, final.failure_code) == (S.FAILED, "initiator_disabled")
 
 
@@ -516,14 +443,14 @@ def test_shutdown_releases_the_job_for_another_attempt(
     thread.join(10)
 
     assert not thread.is_alive()
-    assert _task(app_engine, task.task_id).state is S.QUEUED
-    job = _job(owner_engine, task.task_id)
+    assert records.task(app_engine, task.task_id).state is S.QUEUED
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["attempt"], job["lease_owner"]) == ("pending", 1, None)
     assert [row[:2] for row in _history(owner_engine, task.task_id)][-2:] == [
         ("running", "interrupted"),
         ("interrupted", "queued"),
     ]
-    assert [e for e in _events(owner_engine, task.task_id) if e.startswith("job.")] == [
+    assert [e for e in records.task_events(owner_engine, task.task_id) if e.startswith("job.")] == [
         "job.interrupted",
         "job.retried",
     ]
@@ -548,16 +475,16 @@ def test_retryable_failures_are_retried_until_attempts_run_out(
 
     task = _submit(app_engine, operator)
     spy = Spy(flaky)
-    worker = _worker(app_engine, replace(FAST, max_attempts=2), _every_kind(spy))
+    worker = _worker(app_engine, replace(FAST_WORKER, max_attempts=2), _every_kind(spy))
 
     assert worker.step(threading.Event())
-    assert _task(app_engine, task.task_id).state is S.QUEUED
+    assert records.task(app_engine, task.task_id).state is S.QUEUED
     assert worker.step(threading.Event())
 
-    final = _task(app_engine, task.task_id)
+    final = records.task(app_engine, task.task_id)
     assert (final.state, final.failure_code) == (S.FAILED, "attempts_exhausted")
     assert spy.calls == 2
-    job = _job(owner_engine, task.task_id)
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["attempt"], job["max_attempts"]) == ("finished", 2, MAX_JOB_ATTEMPTS)
     assert [row[:2] for row in _history(owner_engine, task.task_id)][1:] == [
         ("queued", "running"),
@@ -567,7 +494,7 @@ def test_retryable_failures_are_retried_until_attempts_run_out(
         ("running", "interrupted"),
         ("interrupted", "failed"),
     ]
-    assert [e for e in _events(owner_engine, task.task_id) if e.startswith("job.")] == [
+    assert [e for e in records.task_events(owner_engine, task.task_id) if e.startswith("job.")] == [
         "job.interrupted",
         "job.retried",
         "job.interrupted",
@@ -596,7 +523,7 @@ def test_handler_errors_and_invalid_results_fail_without_retry(
 
     assert _worker(app_engine, handlers=_every_kind(spy)).step(threading.Event())
 
-    final = _task(app_engine, task.task_id)
+    final = records.task(app_engine, task.task_id)
     assert (final.state, final.failure_code, spy.calls) == (S.FAILED, code, 1)
 
 
@@ -604,14 +531,14 @@ def test_recovery_cancels_a_running_task_whose_cancellation_was_requested(
     app_engine: Engine, owner_engine: Engine, operator: Caller
 ) -> None:
     task = _submit(app_engine, operator)
-    _claimed(_worker(app_engine, replace(FAST, lease_seconds=0.5)))
+    _claimed(_worker(app_engine, replace(FAST_WORKER, lease_seconds=0.5)))
     TaskService(app_engine, RECORDER).cancel(operator.actor, task.task_id, uuid4().hex)
     time.sleep(0.7)
 
     assert _worker(app_engine).recover() == 1
 
-    assert _task(app_engine, task.task_id).state is S.CANCELLED
-    assert _job(owner_engine, task.task_id)["last_error_code"] == "cancelled"
+    assert records.task(app_engine, task.task_id).state is S.CANCELLED
+    assert records.latest_job(owner_engine, task.task_id)["last_error_code"] == "cancelled"
 
 
 def test_cancelling_a_queued_task_closes_its_job(
@@ -621,7 +548,7 @@ def test_cancelling_a_queued_task_closes_its_job(
 
     TaskService(app_engine, RECORDER).cancel(operator.actor, task.task_id, uuid4().hex)
 
-    job = _job(owner_engine, task.task_id)
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["attempt"], job["last_error_code"]) == ("finished", 0, "cancelled")
     assert _worker(app_engine).claim() is None
 
@@ -633,7 +560,8 @@ def test_a_task_awaiting_approval_gets_no_job(
 
     assert task.state is S.AWAITING_APPROVAL
     assert (
-        _rows(owner_engine, "SELECT id FROM aegis.jobs WHERE task_id = :id", id=task.task_id) == []
+        records.rows(owner_engine, "SELECT id FROM aegis.jobs WHERE task_id = :id", id=task.task_id)
+        == []
     )
 
 
@@ -739,7 +667,7 @@ def test_the_worker_process_runs_tasks_and_stops_on_sigterm(
     )
     try:
         task = _submit(app_engine, operator)
-        _wait_for(lambda: _task(app_engine, task.task_id).state is S.SUCCEEDED, 20, "success")
+        wait_for(lambda: records.task(app_engine, task.task_id).state is S.SUCCEEDED, 20, "success")
     finally:
         process.send_signal(signal.SIGTERM)
         stdout, stderr = process.communicate(timeout=20)
@@ -774,14 +702,16 @@ def test_a_killed_workers_task_is_interrupted_retried_and_succeeds(
     )
     try:
         task = _submit(app_engine, operator, "wait", {"seconds": 2})
-        _wait_for(lambda: _task(app_engine, task.task_id).state is S.RUNNING, 20, "the claim")
+        wait_for(lambda: records.task(app_engine, task.task_id).state is S.RUNNING, 20, "the claim")
     finally:
         victim.kill()
         victim.wait(10)
     stop = threading.Event()
     rescuer = _in_thread(_worker(app_engine).run, stop)
     try:
-        _wait_for(lambda: _task(app_engine, task.task_id).state is S.SUCCEEDED, 40, "recovery")
+        wait_for(
+            lambda: records.task(app_engine, task.task_id).state is S.SUCCEEDED, 40, "recovery"
+        )
     finally:
         stop.set()
         rescuer.join(10)
@@ -795,7 +725,7 @@ def test_a_killed_workers_task_is_interrupted_retried_and_succeeds(
         ("running", "succeeded"),
     ]
     assert _history(owner_engine, task.task_id)[2][4] == "lease_expired"
-    job = _job(owner_engine, task.task_id)
+    job = records.latest_job(owner_engine, task.task_id)
     assert (job["state"], job["attempt"]) == ("finished", 2)
     assert len(_execution_decisions(owner_engine, task.task_id)) == 2
 

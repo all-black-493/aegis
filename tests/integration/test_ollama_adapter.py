@@ -1,5 +1,4 @@
 import logging
-import socket
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -32,6 +31,7 @@ from tests.fixtures.fake_ollama import (
     ndjson_line,
     serve,
 )
+from tests.fixtures.processes import unused_port
 
 PROMPT_MARKER = "PROMPT-MARKER-6f1d"
 OUTPUT_MARKER = "OUTPUT-MARKER-92ab"
@@ -58,13 +58,6 @@ def _request(prompt: str = "Name a colour.", tokens: int = 32) -> GenerationRequ
 
 def _never() -> bool:
     return False
-
-
-def _closed_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        closed: int = probe.getsockname()[1]
-    return closed
 
 
 def test_check_reports_the_local_model_and_its_identity(port: int) -> None:
@@ -103,7 +96,7 @@ def test_check_explains_why_a_model_cannot_be_used(
 
 def test_a_pinned_digest_must_match_and_a_missing_server_is_unreachable(port: int) -> None:
     assert _provider(port, digest="d" * 64).check().detail == "digest_mismatch"
-    assert _provider(_closed_port()).check().detail == "unreachable"
+    assert _provider(unused_port()).check().detail == "unreachable"
 
 
 def test_generation_streams_text_with_counts_and_identity(fake: FakeOllama, port: int) -> None:
@@ -227,7 +220,7 @@ def test_a_silent_server_times_out_as_retryable(fake: FakeOllama, port: int) -> 
 
 def test_an_unreachable_server_is_retryable() -> None:
     with pytest.raises(ProviderUnavailableError) as refused:
-        _provider(_closed_port()).generate(_request(), _never)
+        _provider(unused_port()).generate(_request(), _never)
 
     assert refused.value.retryable
 
@@ -308,6 +301,6 @@ def test_a_failed_pull_is_reported(
 
 def test_pulling_from_an_unreachable_server_is_retryable() -> None:
     with pytest.raises(ProviderUnavailableError) as refused:
-        pull_model(OllamaSettings(_closed_port(), MODEL, None), lambda _status: None)
+        pull_model(OllamaSettings(unused_port(), MODEL, None), lambda _status: None)
 
     assert refused.value.code == "unreachable"

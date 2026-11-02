@@ -5,12 +5,11 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Engine, text
 
-from aegis.config.settings import DatabaseSettings, load_token_pepper
+from aegis.config.settings import DatabaseSettings
 from aegis.db.migrate import downgrade, upgrade
 from aegis.identity.authentication import authenticate
 from aegis.identity.tokens import TOKEN_PREFIX, parse_token
-
-PEPPER = load_token_pepper(os.environ)
+from tests.fixtures.services import PEPPER
 
 
 def _cli(database: str, *args: str, **overrides: str) -> subprocess.CompletedProcess[str]:

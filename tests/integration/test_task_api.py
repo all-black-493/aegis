@@ -1,8 +1,6 @@
-import os
 import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -15,7 +13,6 @@ from aegis.apps.api.app import create_app
 from aegis.apps.api.context import ApiContext
 from aegis.audit.events import AuditEvent, AuditEventType, Source
 from aegis.audit.recorder import AuditRecorder
-from aegis.authorization.access import ActorContext
 from aegis.authorization.catalog import Action, IdentityKind, ResourceType, Role
 from aegis.authorization.contract import (
     DecisionRequirement,
@@ -26,7 +23,7 @@ from aegis.authorization.contract import (
     require_consistent,
 )
 from aegis.config.logs import Redactor
-from aegis.config.settings import Environment, load_token_pepper
+from aegis.config.settings import Environment
 from aegis.identity.admin import IdentityAdministration
 from aegis.identity.schema import SYSTEM_WORKER_ID
 from aegis.jobs.repository import claim, lock_job
@@ -39,26 +36,11 @@ from aegis.tasks.schema import security_decisions, task_state_transitions
 from aegis.tasks.service import IdempotencyConflictError, Submission, Submitted, TaskService
 from aegis.tasks.states import TaskState
 from aegis.tasks.transitions import JobRef, Transition, apply_transition
+from tests.fixtures import records
+from tests.fixtures.services import PEPPER, RECORDER, Caller, make_caller
 
-PEPPER = load_token_pepper(os.environ)
-RECORDER = AuditRecorder(Redactor([PEPPER.reveal()]))
 DECISIONS = DecisionService(RECORDER)
 S = TaskState
-
-
-@dataclass(frozen=True)
-class Caller:
-    name: str
-    actor: ActorContext
-    token: str
-
-    @property
-    def id(self) -> UUID:
-        return self.actor.identity_id
-
-    @property
-    def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
 
 
 class FailingOn(AuditRecorder):
@@ -83,21 +65,6 @@ def client(app_engine: Engine) -> Iterator[TestClient]:
         yield client
 
 
-def _caller(owner_engine: Engine, *roles: Role) -> Caller:
-    name = f"taskapi-{uuid4().hex[:12]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, roles)
-        issued = administration.issue_credential(name, PEPPER)
-    actor = ActorContext(identity_id, IdentityKind.HUMAN, frozenset(roles), issued.credential_id)
-    return Caller(name, actor, issued.token.reveal())
-
-
-@pytest.fixture
-def operator(owner_engine: Engine) -> Caller:
-    return _caller(owner_engine, Role.OPERATOR)
-
-
 def _submit(
     client: TestClient,
     caller: Caller,
@@ -118,13 +85,8 @@ def _created(client: TestClient, caller: Caller, **kwargs: Any) -> UUID:
     return UUID(response.json()["id"])
 
 
-def _rows(owner_engine: Engine, sql: str, **params: Any) -> list[dict[str, Any]]:
-    with owner_engine.connect() as connection:
-        return [dict(row) for row in connection.execute(text(sql), params).mappings()]
-
-
 def _decisions(owner_engine: Engine, request_id: str) -> list[dict[str, Any]]:
-    return _rows(
+    return records.rows(
         owner_engine,
         "SELECT * FROM aegis.security_decisions WHERE request_id = :request_id",
         request_id=request_id,
@@ -132,7 +94,7 @@ def _decisions(owner_engine: Engine, request_id: str) -> list[dict[str, Any]]:
 
 
 def _events(owner_engine: Engine, request_id: str) -> list[str]:
-    rows = _rows(
+    rows = records.rows(
         owner_engine,
         "SELECT event_type FROM aegis.audit_events WHERE request_id = :request_id ORDER BY id",
         request_id=request_id,
@@ -141,7 +103,7 @@ def _events(owner_engine: Engine, request_id: str) -> list[str]:
 
 
 def _tasks_with_key(owner_engine: Engine, caller: Caller, key: str) -> list[dict[str, Any]]:
-    return _rows(
+    return records.rows(
         owner_engine,
         "SELECT * FROM aegis.tasks WHERE initiator_id = :initiator AND idempotency_key = :key",
         initiator=caller.id,
@@ -319,7 +281,7 @@ def test_a_reused_key_with_a_different_body_conflicts_without_disclosure(
 def test_keys_belong_to_each_initiator(
     client: TestClient, owner_engine: Engine, operator: Caller
 ) -> None:
-    other = _caller(owner_engine, Role.OPERATOR)
+    other = make_caller(owner_engine, Role.OPERATOR)
     key = f"key-{uuid4().hex}"
 
     mine = _submit(client, operator, key=key)
@@ -348,7 +310,7 @@ def test_a_denied_submission_creates_nothing_and_leaves_the_key_unused(
 
 
 def test_auditors_cannot_create_tasks(client: TestClient, owner_engine: Engine) -> None:
-    auditor = _caller(owner_engine, Role.AUDITOR)
+    auditor = make_caller(owner_engine, Role.AUDITOR)
     key = f"key-{uuid4().hex}"
 
     response = _submit(client, auditor, key=key)
@@ -435,7 +397,7 @@ def test_bad_keys_and_ownership_fields_are_refused_before_anything_is_saved(
 def test_other_users_tasks_are_hidden(
     client: TestClient, owner_engine: Engine, operator: Caller
 ) -> None:
-    other = _caller(owner_engine, Role.OPERATOR)
+    other = make_caller(owner_engine, Role.OPERATOR)
     task_id = _created(client, operator)
     missing = uuid4()
 
@@ -464,7 +426,7 @@ def test_other_users_tasks_are_hidden(
 def test_listing_everything_requires_permission_and_is_audited(
     client: TestClient, owner_engine: Engine, operator: Caller
 ) -> None:
-    auditor = _caller(owner_engine, Role.AUDITOR)
+    auditor = make_caller(owner_engine, Role.AUDITOR)
     task_id = _created(client, operator)
 
     refused = client.get("/v1/tasks?scope=all", headers=operator.headers)
@@ -480,7 +442,7 @@ def test_listing_everything_requires_permission_and_is_audited(
     )
     assert allowed.status_code == 200
     assert str(task_id) in [item["id"] for item in allowed.json()["items"]]
-    [event] = _rows(
+    [event] = records.rows(
         owner_engine,
         "SELECT actor_id, details FROM aegis.audit_events WHERE request_id = :request_id",
         request_id=allowed.headers["x-request-id"],
@@ -492,7 +454,7 @@ def test_listing_everything_requires_permission_and_is_audited(
 def test_privileged_reads_of_one_task_are_audited(
     client: TestClient, owner_engine: Engine, operator: Caller
 ) -> None:
-    auditor = _caller(owner_engine, Role.AUDITOR)
+    auditor = make_caller(owner_engine, Role.AUDITOR)
     task_id = _created(client, operator)
 
     by_auditor = client.get(f"/v1/tasks/{task_id}", headers=auditor.headers)
@@ -500,7 +462,7 @@ def test_privileged_reads_of_one_task_are_audited(
 
     assert (by_auditor.status_code, by_owner.status_code) == (200, 200)
     assert by_auditor.json() == by_owner.json()
-    [event] = _rows(
+    [event] = records.rows(
         owner_engine,
         "SELECT event_type, task_id, details FROM aegis.audit_events"
         " WHERE request_id = :request_id",
@@ -517,7 +479,7 @@ def test_privileged_reads_of_one_task_are_audited(
 def test_lists_page_through_own_tasks_newest_first(
     client: TestClient, owner_engine: Engine
 ) -> None:
-    caller = _caller(owner_engine, Role.OPERATOR)
+    caller = make_caller(owner_engine, Role.OPERATOR)
     created = {_created(client, caller, kind="wait", task_input={"seconds": n}) for n in range(5)}
 
     items: list[dict[str, Any]] = []
@@ -581,7 +543,7 @@ def test_cancelling_a_running_task_records_a_request(
         "task.cancel_requested",
     ]
     assert _events(owner_engine, second.headers["x-request-id"]) == ["security.decision"]
-    [task] = _rows(owner_engine, "SELECT * FROM aegis.tasks WHERE id = :id", id=task_id)
+    [task] = records.rows(owner_engine, "SELECT * FROM aegis.tasks WHERE id = :id", id=task_id)
     assert task["cancel_requested_by"] == operator.id
 
 
@@ -604,7 +566,7 @@ def test_finished_tasks_cannot_be_cancelled(
 def test_who_may_cancel_someone_elses_task(
     client: TestClient, app_engine: Engine, owner_engine: Engine, operator: Caller
 ) -> None:
-    auditor, admin = _caller(owner_engine, Role.AUDITOR), _caller(owner_engine, Role.ADMIN)
+    auditor, admin = make_caller(owner_engine, Role.AUDITOR), make_caller(owner_engine, Role.ADMIN)
     task_id = _created(client, operator)
 
     by_auditor = client.post(f"/v1/tasks/{task_id}/cancel", headers=auditor.headers)
@@ -662,7 +624,7 @@ def test_saved_decisions_satisfy_c1_to_c9(
 def _submit_failing_on(
     app_engine: Engine, owner_engine: Engine, event_type: AuditEventType, kind: str = "noop"
 ) -> tuple[Any, Caller, str]:
-    caller = _caller(owner_engine, Role.OPERATOR)
+    caller = make_caller(owner_engine, Role.OPERATOR)
     key = f"key-{uuid4().hex}"
     with _app(app_engine, FailingOn(event_type)) as failing:
         response = _submit(failing, caller, kind, key=key)
@@ -714,7 +676,7 @@ def test_reads_and_cancellations_fail_closed_when_audit_fails(
     route: str,
 ) -> None:
     task_id = _created(client, operator)
-    caller = operator if route == "cancel" else _caller(owner_engine, Role.ADMIN)
+    caller = operator if route == "cancel" else make_caller(owner_engine, Role.ADMIN)
 
     with _app(app_engine, FailingOn(event_type)) as failing:
         if route == "cancel":
@@ -809,7 +771,7 @@ def test_concurrent_requests_with_different_bodies_create_one_task(
 def test_saved_read_and_list_denials_replay_identically(
     client: TestClient, app_engine: Engine, owner_engine: Engine, operator: Caller
 ) -> None:
-    other = _caller(owner_engine, Role.OPERATOR)
+    other = make_caller(owner_engine, Role.OPERATOR)
     task_id = _created(client, operator)
     responses = [
         client.get(f"/v1/tasks/{task_id}", headers=other.headers),

@@ -1,3 +1,4 @@
+import socket
 import subprocess
 import sys
 import time
@@ -56,3 +57,11 @@ def live(base: str) -> bool:
         return httpx2.get(f"{base}/health/live").status_code == 200
     except httpx2.TransportError:
         return False
+
+
+def unused_port() -> int:
+    # A loopback port that was free a moment ago: for servers to bind, or as a closed port.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port

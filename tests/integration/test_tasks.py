@@ -25,7 +25,6 @@ from aegis.config.logs import Redactor
 from aegis.config.settings import Secret
 from aegis.identity.admin import IdentityAdministration
 from aegis.identity.schema import SYSTEM_WORKER_ID
-from aegis.jobs.repository import claim, create_job
 from aegis.tasks.repository import (
     NewTask,
     TaskRecord,
@@ -44,9 +43,10 @@ from aegis.tasks.transitions import (
     TransitionConflictError,
     apply_transition,
 )
+from tests.fixtures.records import claim_job
+from tests.fixtures.services import RECORDER
 
 POLICY = PolicyRef("test-policy-1", "a" * 64)
-RECORDER = AuditRecorder(Redactor())
 S = TaskState
 
 
@@ -176,17 +176,6 @@ def _submit(connection: Connection, person: Person) -> TaskRecord:
 def _queued(app_engine: Engine, person: Person) -> TaskRecord:
     with app_engine.begin() as connection:
         return _submit(connection, person)
-
-
-def _job(connection: Connection, task: TaskRecord) -> JobRef:
-    job = claim(
-        connection,
-        create_job(connection, task.task_id, max_attempts=3, correlation_id=None),
-        "test-worker",
-        60,
-    )
-    assert job is not None
-    return job.ref
 
 
 def _run(connection: Connection, task: TaskRecord, job: JobRef) -> TaskRecord:
@@ -385,7 +374,7 @@ def test_an_outdated_version_is_a_conflict(app_tx: Connection, person: Person) -
 
 def test_a_full_worker_lifecycle_is_accepted(app_tx: Connection, person: Person) -> None:
     task = _submit(app_tx, person)
-    job = _job(app_tx, task)
+    job = claim_job(app_tx, task)
     task = _run(app_tx, task, job)
 
     finished = _move(app_tx, task, S.SUCCEEDED, job=job, result={"ok": True})
@@ -512,7 +501,7 @@ def test_the_database_refuses_a_stale_decision(app_engine: Engine, person: Perso
 
 def test_the_database_refuses_a_reused_decision(app_tx: Connection, person: Person) -> None:
     task = _submit(app_tx, person)
-    job = _job(app_tx, task)
+    job = claim_job(app_tx, task)
     execute = _decision(app_tx, task, Action.TASK_EXECUTE, job=job)
     record_decision(app_tx, execute)
     task = _move(app_tx, task, S.RUNNING, execute, job)
@@ -530,7 +519,7 @@ def test_the_database_refuses_a_decision_for_another_job_attempt(
     app_tx: Connection, person: Person
 ) -> None:
     task = _submit(app_tx, person)
-    decision = _decision(app_tx, task, Action.TASK_EXECUTE, job=_job(app_tx, task))
+    decision = _decision(app_tx, task, Action.TASK_EXECUTE, job=claim_job(app_tx, task))
     record_decision(app_tx, decision)
 
     _refused(
@@ -642,7 +631,7 @@ def test_a_running_task_is_cancelled_only_after_a_request(
     app_tx: Connection, person: Person
 ) -> None:
     task = _submit(app_tx, person)
-    job = _job(app_tx, task)
+    job = claim_job(app_tx, task)
     task = _run(app_tx, task, job)
 
     _refused(
@@ -656,7 +645,7 @@ def test_a_cancellation_request_is_stamped_and_permanent(
     app_tx: Connection, person: Person
 ) -> None:
     task = _submit(app_tx, person)
-    job = _job(app_tx, task)
+    job = claim_job(app_tx, task)
     task = _run(app_tx, task, job)
     stamp = app_tx.execute(
         text(

@@ -2,7 +2,6 @@ import io
 import logging
 import os
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -28,13 +27,12 @@ from aegis.config.settings import (
     DatabaseSettings,
     Environment,
     LogLevel,
-    load_token_pepper,
 )
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import downgrade, upgrade
 from aegis.identity.admin import IdentityAdministration, IssuedCredential
-
-PEPPER = load_token_pepper(os.environ)
+from tests.fixtures.processes import unused_port
+from tests.fixtures.services import PEPPER
 
 
 class FailingRecorder(AuditRecorder):
@@ -98,13 +96,6 @@ def _auth_failures(owner_engine: Engine, request_id: str) -> list[tuple[object, 
             {"request_id": request_id},
         )
         return [tuple(row) for row in rows]
-
-
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port: int = probe.getsockname()[1]
-        return port
 
 
 def test_a_cli_issued_token_is_accepted_by_v1_me(test_database: str, client: TestClient) -> None:
@@ -215,7 +206,7 @@ def test_readiness_reports_a_migrated_database(client: TestClient) -> None:
 
 def test_readiness_fails_when_the_database_is_down(app_settings: DatabaseSettings) -> None:
     engine = create_database_engine(
-        replace(app_settings, port=_free_port()), application_name="aegis-tests"
+        replace(app_settings, port=unused_port()), application_name="aegis-tests"
     )
     app = create_app(_context(engine), Environment.TEST)
     try:
@@ -246,7 +237,7 @@ def test_readiness_fails_when_migrations_are_behind(
 def test_the_api_process_listens_on_loopback_only(
     test_database: str, owner_engine: Engine, app_settings: DatabaseSettings
 ) -> None:
-    port = _free_port()
+    port = unused_port()
     token = _issue(owner_engine).token.reveal()
     environ = {
         **os.environ,

@@ -2,27 +2,22 @@ import json
 import os
 import threading
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import Engine, text
 
-from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.access import ActorContext
-from aegis.authorization.catalog import IdentityKind, Role
-from aegis.config.logs import Redactor
 from aegis.config.settings import (
     MODEL_HOST,
     DatabaseRole,
     OllamaSettings,
     SettingsError,
-    WorkerSettings,
     load_database_settings,
     load_model_settings,
-    load_token_pepper,
 )
-from aegis.identity.admin import IdentityAdministration
 from aegis.integrations.ollama.provider import OllamaProvider
 from aegis.jobs.worker import Worker
 from aegis.model_providers.contract import MAX_OUTPUT_BYTES
@@ -38,31 +33,11 @@ from tests.fixtures.fake_ollama import (
     ndjson_line,
     serve,
 )
+from tests.fixtures.services import FAST_WORKER, PEPPER, RECORDER, Caller
 
-PEPPER = load_token_pepper(os.environ)
-RECORDER = AuditRecorder(Redactor([PEPPER.reveal()]))
-FAST = WorkerSettings(
-    poll_seconds=0.05,
-    lease_seconds=10,
-    heartbeat_seconds=0.1,
-    shutdown_grace_seconds=0.3,
-    max_attempts=1,
-)
+FAST = replace(FAST_WORKER, max_attempts=1)
 PROMPT = "PROMPT-7a3c: name three colours."
 pytestmark = pytest.mark.usefixtures("isolated_jobs")
-
-
-@pytest.fixture
-def operator(owner_engine: Engine) -> tuple[ActorContext, str]:
-    name = f"model-server-{uuid4().hex[:12]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, [Role.OPERATOR])
-        issued = administration.issue_credential(name, PEPPER)
-    actor = ActorContext(
-        identity_id, IdentityKind.HUMAN, frozenset({Role.OPERATOR}), issued.credential_id
-    )
-    return actor, issued.token.reveal()
 
 
 @pytest.fixture
@@ -104,9 +79,9 @@ def _stored(owner_engine: Engine, task_id: UUID) -> str:
 
 
 def test_only_the_prompt_and_fixed_options_reach_the_model_server(
-    app_engine: Engine, operator: tuple[ActorContext, str], fake: FakeOllama, port: int
+    app_engine: Engine, operator: Caller, fake: FakeOllama, port: int
 ) -> None:
-    task = _run(app_engine, operator[0], port)
+    task = _run(app_engine, operator.actor, port)
 
     assert task.state is TaskState.SUCCEEDED
     assert task.result is not None
@@ -127,7 +102,7 @@ def test_only_the_prompt_and_fixed_options_reach_the_model_server(
         }
     ]
     received = "\n".join(fake.seen)
-    secrets = [PEPPER.reveal(), operator[1]] + [
+    secrets = [PEPPER.reveal(), operator.token] + [
         load_database_settings(os.environ, role).password.reveal() for role in DatabaseRole
     ]
     for secret in secrets:
@@ -163,7 +138,7 @@ def test_the_model_server_cannot_be_moved_off_this_host(
 )
 def test_a_remote_swapped_or_unusable_model_never_receives_the_prompt(
     app_engine: Engine,
-    operator: tuple[ActorContext, str],
+    operator: Caller,
     fake: FakeOllama,
     port: int,
     change: dict[str, Any],
@@ -172,7 +147,7 @@ def test_a_remote_swapped_or_unusable_model_never_receives_the_prompt(
     for name, value in change.items():
         setattr(fake, name, value)
 
-    task = _run(app_engine, operator[0], port)
+    task = _run(app_engine, operator.actor, port)
 
     assert (task.state, task.failure_code, task.result) == (TaskState.FAILED, code, None)
     assert fake.requests == []
@@ -182,7 +157,7 @@ def test_a_remote_swapped_or_unusable_model_never_receives_the_prompt(
 def test_a_tool_call_from_the_model_fails_the_task_and_stores_nothing(
     app_engine: Engine,
     owner_engine: Engine,
-    operator: tuple[ActorContext, str],
+    operator: Caller,
     fake: FakeOllama,
     port: int,
 ) -> None:
@@ -193,7 +168,7 @@ def test_a_tool_call_from_the_model_fails_the_task_and_stores_nothing(
         done_line(),
     ]
 
-    task = _run(app_engine, operator[0], port)
+    task = _run(app_engine, operator.actor, port)
 
     assert (task.state, task.failure_code, task.result) == (TaskState.FAILED, "tool_call", None)
     stored = _stored(owner_engine, task.task_id)
@@ -205,13 +180,13 @@ def test_a_tool_call_from_the_model_fails_the_task_and_stores_nothing(
 def test_a_stream_that_ends_early_stores_no_partial_answer(
     app_engine: Engine,
     owner_engine: Engine,
-    operator: tuple[ActorContext, str],
+    operator: Caller,
     fake: FakeOllama,
     port: int,
 ) -> None:
     fake.lines = [content_line("PARTIAL-ANSWER-91f0 and then")]
 
-    task = _run(app_engine, operator[0], port)
+    task = _run(app_engine, operator.actor, port)
 
     assert (task.state, task.failure_code, task.result) == (
         TaskState.FAILED,
@@ -222,11 +197,11 @@ def test_a_stream_that_ends_early_stores_no_partial_answer(
 
 
 def test_an_endless_stream_is_cut_to_the_output_limit(
-    app_engine: Engine, operator: tuple[ActorContext, str], fake: FakeOllama, port: int
+    app_engine: Engine, operator: Caller, fake: FakeOllama, port: int
 ) -> None:
     fake.lines = [content_line("y" * 1000) for _ in range(2000)] + [done_line()]
 
-    task = _run(app_engine, operator[0], port)
+    task = _run(app_engine, operator.actor, port)
 
     assert task.state is TaskState.SUCCEEDED
     assert task.result is not None
