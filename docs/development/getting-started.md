@@ -1,6 +1,6 @@
 # Getting started
 
-AEGIS has implemented **Phase 0** (the local development foundation) and **Phase 1** (API, worker, database and configuration). **Phase 2** (model provider abstraction) is in progress. The repository provides:
+AEGIS has implemented **Phase 0** (the local development foundation) and **Phase 1** (API, worker, database and configuration). **Phase 2** (model provider abstraction). The repository provides:
 
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
@@ -316,15 +316,23 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
   - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process;
   - verify `generate` tasks with the mock: from the API to `succeeded` with `model.generated`, refused prompts never sent, cancellation stopping the model, retries while the model is unavailable, failure codes for refused models, and a worker process with an unreachable model still running other kinds.
 
-- **The end-to-end test** (`tests/e2e`, run by `make test-integration`) uses only real processes: the `aegis` CLI creates identities and issues tokens, then the API and worker processes run tasks over HTTP on loopback. A worker is killed with SIGKILL during a task, and a second worker finishes it. The test also checks the audit chain and that no process output contains a credential.
-- **Local AI tests** (marked `local_ai`, run only by `make test-local-ai`) check the real local model: the verified runtime version, the doctor's model check, finishing on stop and length, repeatability at temperature 0 with a fixed seed, stopping, and digest pinning. `make test-integration` and CI deselect them, and they fail rather than skip when `AEGIS_OLLAMA_MODEL` is not set.
-- **The security suite** (`tests/security`, run by `make test-security`) holds the cross-cutting checks that the threat model (`docs/security/phase-1-threat-model.md`) relies on:
+- **The end-to-end tests** (`tests/e2e`) use only real processes: the `aegis` CLI creates identities and issues tokens, then the API and worker processes run tasks over HTTP on loopback. Neither process output may contain a credential.
+  - **Phase 1 workflow** (run by `make test-integration`): a worker is killed with SIGKILL during a task, and a second worker finishes it. The audit chain is checked.
+  - **Phase 2 workflow, once per provider:** a `generate` task runs from submission to `succeeded`. A submission that tries to choose the model is refused. The test checks the result's model identity, the history, the audit chain ending in `model.generated`, the decisions and policy version, and that neither the prompt nor the output appears in any process output. `make test-integration` runs it with the mock (as CI does), and `make test-local-ai` runs it with the local Ollama model.
+- **Local AI tests** (marked `local_ai`, run only by `make test-local-ai`) check the real local model: the verified runtime version, the doctor's model check, finishing on stop and length, repeatability at temperature 0 with a fixed seed, stopping, digest pinning, and the Phase 2 end-to-end workflow. `make test-integration` and CI deselect them, and they fail rather than skip when `AEGIS_OLLAMA_MODEL` is not set.
+- **The security suite** (`tests/security`, run by `make test-security`) holds the cross-cutting checks that the threat models (`docs/security/phase-1-threat-model.md` and `phase-2-threat-model.md`) rely on:
   - the exact privileges of `aegis_app`;
   - attacks made with stolen `aegis_app` credentials: approval bypass, forged tasks, unregistered kinds;
   - spoofed request IDs;
   - a sweep of every table, log and response for credentials;
   - failure injection: database down, database lost during a run, audit writes failing in the worker, evaluator errors, and a worker started on an outdated schema;
-  - the model boundary: model output stored as inert text, tasks unable to choose the model, sampling or tools, and output the database cannot hold failing the task.
+  - the model boundary: model output stored as inert text, tasks unable to choose the model, sampling or tools, and output the database cannot hold failing the task;
+  - the model server boundary, against a fake Ollama server on loopback and driven through the real worker:
+    - only the prompt and fixed options reach the server, with no secret in any request;
+    - remote, swapped, missing or misreporting models never receive the prompt;
+    - a tool call or a stream that ends early stores nothing;
+    - an endless stream is cut to the output limit.
+- **Shared test code** (`tests/fixtures`): the fake Ollama server and the helpers that start and stop real processes.
 
 Integration, end-to-end and security tests fail, never skip, when PostgreSQL or the settings are missing. They share the `<AEGIS_POSTGRES_DB>_test` database, recreated for each run; one security test also recreates `<AEGIS_POSTGRES_DB>_outdated_test`. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 

@@ -1,12 +1,6 @@
 import os
 import signal
-import socket
-import subprocess
-import sys
-import time
-from collections.abc import Callable, Iterator
 from typing import Any
-from uuid import uuid4
 
 import httpx2
 import pytest
@@ -18,77 +12,9 @@ from aegis.config.settings import (
     load_database_settings,
     load_token_pepper,
 )
+from tests.fixtures.processes import Process, identity, live, wait_for
 
 pytestmark = pytest.mark.usefixtures("isolated_jobs")
-
-
-class Process:
-    def __init__(self, module: str, environ: dict[str, str]) -> None:
-        self.popen = subprocess.Popen(
-            [sys.executable, "-m", module],
-            env=environ,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        self.output = ""
-
-    def stop(self, sig: signal.Signals) -> int:
-        if self.popen.poll() is None:
-            self.popen.send_signal(sig)
-        self.output, _ = self.popen.communicate(timeout=30)
-        return self.popen.returncode
-
-
-@pytest.fixture
-def environ(test_database: str) -> dict[str, str]:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    return {
-        **os.environ,
-        "AEGIS_ENV": "production",
-        "AEGIS_POSTGRES_DB": test_database,
-        "AEGIS_API_PORT": str(port),
-        "AEGIS_WORKER_POLL_SECONDS": "1",
-        "AEGIS_WORKER_LEASE_SECONDS": "10",
-        "AEGIS_WORKER_HEARTBEAT_SECONDS": "1",
-    }
-
-
-@pytest.fixture
-def processes() -> Iterator[list[Process]]:
-    started: list[Process] = []
-    yield started
-    for process in started:
-        if process.popen.poll() is None:
-            process.popen.kill()
-            process.popen.communicate(timeout=30)
-
-
-def _cli(environ: dict[str, str], *args: str) -> str:
-    result = subprocess.run(
-        [sys.executable, "-m", "aegis.apps.cli", *args, "--database", environ["AEGIS_POSTGRES_DB"]],
-        env=environ,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
-def _identity(environ: dict[str, str], role: str) -> str:
-    name = f"e2e-{role}-{uuid4().hex[:8]}"
-    _cli(environ, "identity", "create", name, "--kind", "human", "--role", role)
-    return _cli(environ, "credential", "issue", name)
-
-
-def _wait_for(condition: Callable[[], bool], timeout: float, what: str) -> None:
-    deadline = time.monotonic() + timeout
-    while not condition():
-        if time.monotonic() > deadline:
-            pytest.fail(f"timed out waiting for {what}")
-        time.sleep(0.1)
 
 
 def test_tasks_flow_from_the_api_through_crashing_workers_to_their_final_state(
@@ -97,12 +23,12 @@ def test_tasks_flow_from_the_api_through_crashing_workers_to_their_final_state(
     owner_engine: Engine,
     app_settings: DatabaseSettings,
 ) -> None:
-    operator, auditor = _identity(environ, "operator"), _identity(environ, "auditor")
+    operator, auditor = identity(environ, "operator"), identity(environ, "auditor")
     api = Process("aegis.apps.api", environ)
     first_worker = Process("aegis.apps.worker", environ)
     processes.extend([api, first_worker])
     base = f"http://127.0.0.1:{environ['AEGIS_API_PORT']}"
-    _wait_for(lambda: _live(base), 20, "the API")
+    wait_for(lambda: live(base), 20, "the API")
 
     with httpx2.Client(base_url=base, timeout=10) as http:
 
@@ -124,14 +50,14 @@ def test_tasks_flow_from_the_api_through_crashing_workers_to_their_final_state(
             return value
 
         quick = submit("e2e-quick-0001", "noop", {})
-        _wait_for(lambda: state(quick) == "succeeded", 20, "the noop task")
+        wait_for(lambda: state(quick) == "succeeded", 20, "the noop task")
 
         survivor = submit("e2e-survivor-0001", "wait", {"seconds": 3})
-        _wait_for(lambda: state(survivor) == "running", 20, "the claim")
+        wait_for(lambda: state(survivor) == "running", 20, "the claim")
         assert first_worker.stop(signal.SIGKILL) == -signal.SIGKILL
         second_worker = Process("aegis.apps.worker", environ)
         processes.append(second_worker)
-        _wait_for(lambda: state(survivor) == "succeeded", 40, "recovery after the crash")
+        wait_for(lambda: state(survivor) == "succeeded", 40, "recovery after the crash")
 
         held = submit("e2e-held-0001", "wait", {"seconds": 120})
         assert state(held) == "awaiting_approval"
@@ -191,10 +117,3 @@ def test_tasks_flow_from_the_api_through_crashing_workers_to_their_final_state(
     ):
         assert secret not in output
     assert "worker stopped" in second_worker.output
-
-
-def _live(base: str) -> bool:
-    try:
-        return httpx2.get(f"{base}/health/live").status_code == 200
-    except httpx2.TransportError:
-        return False
