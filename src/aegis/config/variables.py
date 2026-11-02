@@ -80,6 +80,21 @@ VARIABLES = (
         in_template=False,
     ),
     Variable(
+        "AEGIS_SANDBOX_RUNTIME",
+        "sandbox runtime: none or openshell; default none, which refuses sandbox tasks",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_OPENSHELL_GATEWAY",
+        "registered OpenShell gateway to use; default openshell",
+        in_template=False,
+    ),
+    Variable(
+        "AEGIS_OPENSHELL_WORKSPACE",
+        "OpenShell workspace that holds AEGIS's sandboxes; default aegis",
+        in_template=False,
+    ),
+    Variable(
         "AEGIS_TOKEN_PEPPER",
         "server-side key for hashing API tokens (API, administration)",
         secret=True,

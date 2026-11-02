@@ -38,6 +38,8 @@ MODEL_PACKAGES_INDEPENDENT_OF = (
     "psycopg",
     "alembic",
 )
+# The sandbox runtime enforces nothing AEGIS decides and depends on none of AEGIS's state.
+RUNTIME_PACKAGES = ("aegis.runtime", "aegis.integrations.openshell")
 ENVIRONMENT_ACCESS = frozenset({"environ", "environb", "getenv", "putenv", "unsetenv"})
 
 
@@ -75,6 +77,16 @@ RULES = (
         Rule(package, model, "decisions cannot depend on the model")
         for package in SECURITY_PACKAGES
         for model in MODEL_PACKAGES
+    ),
+    *(
+        Rule(source, forbidden, "the sandbox runtime knows nothing of AEGIS's state or decisions")
+        for source in RUNTIME_PACKAGES
+        for forbidden in MODEL_PACKAGES_INDEPENDENT_OF
+    ),
+    *(
+        Rule(package, runtime, "decisions cannot depend on the sandbox runtime")
+        for package in SECURITY_PACKAGES
+        for runtime in RUNTIME_PACKAGES
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
     Rule(
@@ -197,6 +209,18 @@ def test_source_tree_respects_the_layering_rules() -> None:
         ),
         ("aegis/policy/rules.py", "from aegis.model_providers import contract\n", "the model"),
         ("aegis/authorization/access.py", "import aegis.integrations.ollama\n", "the model"),
+        (
+            "aegis/runtime/contract.py",
+            "from aegis.audit import recorder\n",
+            "sandbox runtime knows",
+        ),
+        ("aegis/runtime/factory.py", "from aegis.policy import rules\n", "sandbox runtime knows"),
+        ("aegis/policy/rules.py", "from aegis.runtime import contract\n", "depend on the sandbox"),
+        (
+            "aegis/authorization/access.py",
+            "import aegis.runtime.contract\n",
+            "depend on the sandbox",
+        ),
     ],
 )
 def test_forbidden_dependencies_are_detected(

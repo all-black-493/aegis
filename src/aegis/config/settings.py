@@ -15,6 +15,8 @@ DEFAULT_API_PORT = 8000
 MODEL_HOST = "127.0.0.1"
 DEFAULT_OLLAMA_PORT = 11436
 DEFAULT_MODEL_TIMEOUT_SECONDS = 120
+DEFAULT_OPENSHELL_GATEWAY = "openshell"
+DEFAULT_OPENSHELL_WORKSPACE = "aegis"
 # Mirrors aegis.policy.rules.MAX_JOB_ATTEMPTS, which configuration may not import; a test keeps
 # them equal, and the worker re-checks at startup.
 MAX_WORKER_ATTEMPTS = 10
@@ -26,6 +28,9 @@ _OLLAMA_MODEL = re.compile(
     r"(?:[A-Za-z0-9][A-Za-z0-9_-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?"
 )
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+_OPENSHELL_GATEWAY = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
+# OpenShell workspace names are DNS-1123 labels of at most 19 characters.
+_OPENSHELL_WORKSPACE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?")
 
 
 class Environment(StrEnum):
@@ -103,6 +108,23 @@ class ModelSettings:
     provider: ModelProviderKind = ModelProviderKind.MOCK
     timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
     ollama: OllamaSettings | None = None
+
+
+class SandboxRuntimeKind(StrEnum):
+    NONE = "none"
+    OPENSHELL = "openshell"
+
+
+@dataclass(frozen=True)
+class OpenShellSettings:
+    gateway: str = DEFAULT_OPENSHELL_GATEWAY
+    workspace: str = DEFAULT_OPENSHELL_WORKSPACE
+
+
+@dataclass(frozen=True)
+class RuntimeSettings:
+    runtime: SandboxRuntimeKind = SandboxRuntimeKind.NONE
+    openshell: OpenShellSettings = OpenShellSettings()
 
 
 @dataclass(frozen=True)
@@ -211,6 +233,25 @@ def load_model_settings(environ: Mapping[str, str]) -> ModelSettings:
     # Built whenever a model is named, so the model can be pulled before the worker uses it.
     ollama = OllamaSettings(port, model, digest) if model else None
     return ModelSettings(provider, timeout, ollama)
+
+
+def load_runtime_settings(environ: Mapping[str, str]) -> RuntimeSettings:
+    problems = unknown_variables(environ)
+    runtime = _choice(
+        environ, "AEGIS_SANDBOX_RUNTIME", SandboxRuntimeKind, SandboxRuntimeKind.NONE, problems
+    )
+    gateway = environ.get("AEGIS_OPENSHELL_GATEWAY", "").strip() or DEFAULT_OPENSHELL_GATEWAY
+    if not _OPENSHELL_GATEWAY.fullmatch(gateway):
+        problems.append("AEGIS_OPENSHELL_GATEWAY must be a registered gateway name")
+    workspace = environ.get("AEGIS_OPENSHELL_WORKSPACE", "").strip() or DEFAULT_OPENSHELL_WORKSPACE
+    if not _OPENSHELL_WORKSPACE.fullmatch(workspace):
+        problems.append("AEGIS_OPENSHELL_WORKSPACE must be a workspace name such as aegis")
+    elif workspace == "default":
+        # The default workspace holds sandboxes that are not AEGIS's (ADR-0016).
+        problems.append("AEGIS_OPENSHELL_WORKSPACE must not be the default workspace")
+    if problems:
+        raise SettingsError(problems)
+    return RuntimeSettings(runtime, OpenShellSettings(gateway, workspace))
 
 
 def load_token_pepper(environ: Mapping[str, str]) -> Secret:

@@ -6,10 +6,12 @@ from pathlib import Path
 from aegis.config.envfile import PLACEHOLDER, EnvFileError, parse_env_file
 from aegis.config.settings import (
     ModelProviderKind,
+    SandboxRuntimeKind,
     SettingsError,
     load_api_settings,
     load_common_settings,
     load_model_settings,
+    load_runtime_settings,
     load_token_pepper,
     load_worker_settings,
 )
@@ -18,6 +20,7 @@ from aegis.db.migrate import head_revision
 from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
 from aegis.doctor.system import System
 from aegis.integrations.ollama.provider import VERIFIED_VERSION
+from aegis.integrations.openshell.cli import VERIFIED_VERSION as VERIFIED_OPENSHELL
 
 REQUIRED_PYTHON = (3, 13)
 POSTGRES_HOST = "127.0.0.1"
@@ -28,6 +31,7 @@ GIB = 1024**3
 MIN_FREE_DISK_BYTES = 2 * GIB
 MIN_TOTAL_MEMORY_BYTES = 2 * GIB
 LOW_AVAILABLE_MEMORY_BYTES = 1 * GIB
+MIN_LANDLOCK_ABI = 3
 
 REQUIRED = Requirement.REQUIRED
 OPTIONAL = Requirement.OPTIONAL
@@ -66,6 +70,16 @@ _MODEL_HINTS = {
 }
 
 
+_RUNTIME_HINTS = {
+    "cli_missing": f"install the OpenShell {VERIFIED_OPENSHELL} package",
+    "version_mismatch": f"AEGIS is verified with OpenShell {VERIFIED_OPENSHELL} only (ADR-0016)",
+    "unreachable": "start it with `systemctl --user start openshell-gateway`",
+    "not_connected": "register and select the gateway named by AEGIS_OPENSHELL_GATEWAY",
+    "workspace_missing": "create it with `make openshell-init`",
+    "global_policy_active": "a global policy would replace AEGIS's sandbox policies",
+}
+
+
 def run_checks(system: System, root: Path) -> Diagnosis:
     env_values, env_result = check_env_file(root)
     engine_result, docker = check_docker_engine(system, root)
@@ -94,6 +108,7 @@ def run_checks(system: System, root: Path) -> Diagnosis:
         service_result,
         check_migrations(system, root, docker, env_values, service_result),
         check_model_provider(system, env_values if env_result.status is PASS else None),
+        check_sandbox_runtime(system, env_values if env_result.status is PASS else None),
     )
     secrets = frozenset(
         value for key, value in (env_values or {}).items() if key in SECRET_NAMES and value
@@ -374,6 +389,7 @@ def _env_problem(values: dict[str, str]) -> str | None:
         load_api_settings(values)
         load_worker_settings(values)
         load_model_settings(values)
+        load_runtime_settings(values)
         load_token_pepper(values)
     except SettingsError as error:
         return "; ".join(error.problems)
@@ -470,6 +486,31 @@ def check_model_provider(system: System, env_values: dict[str, str] | None) -> C
         return CheckResult(
             name, REQUIRED, WARN, f"{detail}; the adapter was verified with {VERIFIED_VERSION}"
         )
+    return CheckResult(name, REQUIRED, PASS, detail)
+
+
+def check_sandbox_runtime(system: System, env_values: dict[str, str] | None) -> CheckResult:
+    name = "NVIDIA OpenShell"
+    if env_values is None:
+        return CheckResult(name, OPTIONAL, SKIP, "blocked by: .env configuration")
+    settings = load_runtime_settings(env_values)
+    if settings.runtime is SandboxRuntimeKind.NONE:
+        return CheckResult(
+            name, OPTIONAL, SKIP, "disabled (AEGIS_SANDBOX_RUNTIME=none); sandbox tasks are refused"
+        )
+    abi = system.landlock_abi()
+    if abi is None or abi < MIN_LANDLOCK_ABI:
+        detail = f"Landlock ABI {abi or 'unavailable'}; OpenShell needs ABI {MIN_LANDLOCK_ABI}"
+        return CheckResult(name, REQUIRED, FAIL, detail)
+    status = system.runtime_status(settings)
+    if not status.healthy:
+        hint = _RUNTIME_HINTS.get(status.detail, "see ADR-0016")
+        return CheckResult(name, REQUIRED, FAIL, f"{status.detail}; {hint}")
+    openshell = settings.openshell
+    detail = (
+        f"{status.version} via gateway {openshell.gateway}, workspace {openshell.workspace},"
+        f" Landlock ABI {abi}"
+    )
     return CheckResult(name, REQUIRED, PASS, detail)
 
 

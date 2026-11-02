@@ -2,7 +2,10 @@ import os
 
 import pytest
 
+from aegis.apps.cli import __main__ as cli
 from aegis.apps.cli.__main__ import main
+from aegis.config.settings import OpenShellSettings
+from aegis.runtime.contract import RuntimeStatus
 
 
 @pytest.fixture
@@ -94,3 +97,59 @@ def test_pulling_a_model_fails_cleanly_before_connecting(
     assert error.startswith("error: ")
     assert message in error
     assert "Traceback" not in error
+
+
+class StubRuntime:
+    workspace_exists = False
+    status = RuntimeStatus(True, "ok", "0.1.6")
+
+    def __init__(self, settings: OpenShellSettings) -> None:
+        self.settings = settings
+
+    def ensure_workspace(self) -> bool:
+        return not self.workspace_exists
+
+    def check(self) -> RuntimeStatus:
+        return self.status
+
+
+def test_openshell_init_refuses_the_default_workspace_before_running_anything(
+    environment: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def never(settings: OpenShellSettings) -> None:
+        raise AssertionError("the runtime must not be built from invalid settings")
+
+    environment.setenv("AEGIS_OPENSHELL_WORKSPACE", "default")
+    environment.setattr(cli, "OpenShellRuntime", never)
+
+    assert main(["openshell", "init"]) == 1
+
+    assert "must not be the default workspace" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("exists", "action"), [(False, "created"), (True, "already exists")])
+def test_openshell_init_creates_the_workspace_and_checks_the_runtime(
+    environment: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    exists: bool,
+    action: str,
+) -> None:
+    environment.setattr(cli, "OpenShellRuntime", StubRuntime)
+    environment.setattr(StubRuntime, "workspace_exists", exists)
+
+    assert main(["openshell", "init"]) == 0
+
+    assert capsys.readouterr().out == (
+        f"workspace aegis {action} on gateway openshell; OpenShell 0.1.6 is ready\n"
+    )
+
+
+def test_openshell_init_fails_when_the_runtime_is_unusable(
+    environment: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    environment.setattr(cli, "OpenShellRuntime", StubRuntime)
+    environment.setattr(StubRuntime, "status", RuntimeStatus(False, "global_policy_active"))
+
+    assert main(["openshell", "init"]) == 1
+
+    assert "OpenShell is not usable: global_policy_active" in capsys.readouterr().err
