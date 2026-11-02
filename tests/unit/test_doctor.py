@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from aegis.config.settings import ModelProviderKind, ModelSettings
+from aegis.config.settings import (
+    ModelProviderKind,
+    ModelSettings,
+    RuntimeSettings,
+    SandboxRuntimeKind,
+)
 from aegis.config.variables import TEMPLATE_NAMES
 from aegis.db.migrate import head_revision
 from aegis.doctor.__main__ import main
@@ -14,6 +19,7 @@ from aegis.doctor.model import CheckResult, Diagnosis, Requirement, Status
 from aegis.doctor.report import REDACTED, render
 from aegis.doctor.system import CommandResult, Memory
 from aegis.model_providers.contract import ModelIdentity, ProviderStatus
+from aegis.runtime.contract import RuntimeStatus
 
 PASSWORD = "0123456789abcdef0123456789abcdef"
 MODEL_DIGEST = "7df6b6e09427a769808717c0a93cadc4ae99ed4eb8bf5ca557c90846becea435"
@@ -78,6 +84,9 @@ class FakeSystem:
     accepts_connections: bool = True
     model: ProviderStatus = field(default_factory=lambda: HEALTHY_MODEL)
     model_settings: list[ModelSettings] = field(default_factory=list)
+    runtime: RuntimeStatus = field(default_factory=lambda: RuntimeStatus(True, "ok", "0.1.6"))
+    runtime_settings: list[RuntimeSettings] = field(default_factory=list)
+    abi: int | None = 8
 
     def python_version(self) -> tuple[int, int, int]:
         return self.version
@@ -106,6 +115,13 @@ class FakeSystem:
     def model_status(self, settings: ModelSettings) -> ProviderStatus:
         self.model_settings.append(settings)
         return self.model
+
+    def runtime_status(self, settings: RuntimeSettings) -> RuntimeStatus:
+        self.runtime_settings.append(settings)
+        return self.runtime
+
+    def landlock_abi(self) -> int | None:
+        return self.abi
 
 
 def write_env(root: Path, **overrides: str | None) -> None:
@@ -145,7 +161,10 @@ def system(root: Path) -> FakeSystem:
 def test_healthy_environment_passes(system: FakeSystem, root: Path) -> None:
     diagnosis = run_checks(system, root)
 
-    assert [r.status for r in diagnosis.results] == [Status.PASS] * len(diagnosis.results)
+    statuses = {r.name: r.status for r in diagnosis.results}
+    # The sandbox runtime is disabled by default, which skips its check rather than passing it.
+    assert statuses.pop("NVIDIA OpenShell") is Status.SKIP
+    assert set(statuses.values()) == {Status.PASS}
     assert diagnosis.exit_code == 0
     assert "Result: OK" in render(diagnosis)
 
@@ -494,9 +513,9 @@ def test_unimplemented_integrations_are_listed_but_not_checked(
     diagnosis = run_checks(system, root)
     output = render(diagnosis)
 
-    assert "NVIDIA OpenShell" in output
-    assert "untrusted execution is unavailable" in output
-    for name in ("OpenShell", "Ollama", "Langfuse"):
+    assert "Langfuse and OpenTelemetry  Phase 8" in output
+    assert "[----] NVIDIA OpenShell" not in output
+    for name in ("Ollama", "Langfuse"):
         assert not any(name.lower() in r.name.lower() for r in diagnosis.results)
     assert diagnosis.exit_code == 0
 
@@ -597,3 +616,76 @@ def test_the_model_check_waits_for_a_valid_env_file(system: FakeSystem, root: Pa
 
     assert (check.status, check.detail) == (Status.SKIP, "blocked by: .env configuration")
     assert system.model_settings == []
+
+
+OPENSHELL = {"AEGIS_SANDBOX_RUNTIME": "openshell"}
+
+
+def test_a_disabled_runtime_is_skipped_and_refuses_sandbox_tasks(
+    system: FakeSystem, root: Path
+) -> None:
+    check = result(run_checks(system, root), "NVIDIA OpenShell")
+
+    assert (check.requirement, check.status) == (Requirement.OPTIONAL, Status.SKIP)
+    assert "sandbox tasks are refused" in check.detail
+    assert system.runtime_settings == []
+
+
+def test_a_configured_openshell_is_required_and_identified(system: FakeSystem, root: Path) -> None:
+    write_env(root, **OPENSHELL)
+
+    diagnosis = run_checks(system, root)
+
+    check = result(diagnosis, "NVIDIA OpenShell")
+    assert (check.requirement, check.status) == (Requirement.REQUIRED, Status.PASS)
+    assert check.detail == "0.1.6 via gateway openshell, workspace aegis, Landlock ABI 8"
+    [settings] = system.runtime_settings
+    assert settings.runtime is SandboxRuntimeKind.OPENSHELL
+    assert diagnosis.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    ("detail", "hint"),
+    [
+        ("cli_missing", "install the OpenShell 0.1.6 package"),
+        ("version_mismatch", "ADR-0016"),
+        ("unreachable", "systemctl --user start openshell-gateway"),
+        ("not_connected", "AEGIS_OPENSHELL_GATEWAY"),
+        ("workspace_missing", "make openshell-init"),
+        ("global_policy_active", "replace AEGIS's sandbox policies"),
+        ("protocol_error", "ADR-0016"),
+    ],
+)
+def test_an_unusable_openshell_fails_with_a_hint(
+    system: FakeSystem, root: Path, detail: str, hint: str
+) -> None:
+    write_env(root, **OPENSHELL)
+    system.runtime = RuntimeStatus(False, detail)
+
+    diagnosis = run_checks(system, root)
+
+    check = result(diagnosis, "NVIDIA OpenShell")
+    assert (check.status, diagnosis.exit_code) == (Status.FAIL, 1)
+    assert detail in check.detail
+    assert hint in check.detail
+
+
+@pytest.mark.parametrize("abi", [None, 2])
+def test_openshell_needs_landlock_abi_3(system: FakeSystem, root: Path, abi: int | None) -> None:
+    write_env(root, **OPENSHELL)
+    system.abi = abi
+
+    check = result(run_checks(system, root), "NVIDIA OpenShell")
+
+    assert (check.requirement, check.status) == (Requirement.REQUIRED, Status.FAIL)
+    assert "needs ABI 3" in check.detail
+    assert system.runtime_settings == []
+
+
+def test_an_invalid_runtime_setting_fails_the_env_check(system: FakeSystem, root: Path) -> None:
+    write_env(root, AEGIS_SANDBOX_RUNTIME="docker")
+
+    diagnosis = run_checks(system, root)
+
+    assert result(diagnosis, ".env configuration").status is Status.FAIL
+    assert result(diagnosis, "NVIDIA OpenShell").status is Status.SKIP

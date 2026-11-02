@@ -864,10 +864,12 @@ AEGIS/
 │       ├── doctor/
 │       ├── identity/
 │       ├── integrations/
-│       │   └── ollama/
+│       │   ├── ollama/
+│       │   └── openshell/
 │       ├── jobs/
 │       ├── model_providers/
 │       ├── policy/
+│       ├── runtime/
 │       └── tasks/
 ├── tests/
 │   ├── conftest.py
@@ -887,7 +889,7 @@ AEGIS/
 └── uv.lock
 ```
 
-`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations; `src/aegis/audit/` the append-only audit store ([ADR-0010](docs/architecture/decisions/0010-audit-store.md)); `src/aegis/authorization/` the role and permission catalog, `authorize()` and the shared security-decision contract ([ADR-0006](docs/architecture/decisions/0006-authorization-and-decision-contract.md)); `src/aegis/identity/` identities, role assignments, API tokens and their administration ([ADR-0005](docs/architecture/decisions/0005-identities-and-credentials.md)); `src/aegis/tasks/` the task state machine, task and decision storage, guarded transitions ([ADR-0008](docs/architecture/decisions/0008-task-storage-and-integrity.md)) and the task service; `src/aegis/jobs/` the jobs table, the worker and the `noop`, `wait` and `generate` handlers ([ADR-0009](docs/architecture/decisions/0009-worker.md), [ADR-0015](docs/architecture/decisions/0015-generate-task-kind.md)); `src/aegis/policy/` the versioned policy rules and the decision service ([ADR-0007](docs/architecture/decisions/0007-policy-and-decision-service.md)); `src/aegis/model_providers/` the model provider contract, the deterministic mock provider and the provider factory ([ADR-0013](docs/architecture/decisions/0013-model-provider-contract.md)); `src/aegis/integrations/ollama/` the Ollama adapter, verified against Ollama 0.34.2 ([ADR-0014](docs/architecture/decisions/0014-ollama-integration.md)); `src/aegis/apps/cli/` the `aegis` command (`aegis db`, `aegis identity`, `aegis credential`, `aegis role`); `src/aegis/apps/api/` the HTTP API run by `make api` ([ADR-0004](docs/architecture/decisions/0004-api-foundation.md), [ADR-0011](docs/architecture/decisions/0011-task-api.md)); and `src/aegis/apps/worker/` the worker run by `make worker`. `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
+`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations; `src/aegis/audit/` the append-only audit store ([ADR-0010](docs/architecture/decisions/0010-audit-store.md)); `src/aegis/authorization/` the role and permission catalog, `authorize()` and the shared security-decision contract ([ADR-0006](docs/architecture/decisions/0006-authorization-and-decision-contract.md)); `src/aegis/identity/` identities, role assignments, API tokens and their administration ([ADR-0005](docs/architecture/decisions/0005-identities-and-credentials.md)); `src/aegis/tasks/` the task state machine, task and decision storage, guarded transitions ([ADR-0008](docs/architecture/decisions/0008-task-storage-and-integrity.md)) and the task service; `src/aegis/jobs/` the jobs table, the worker and the `noop`, `wait` and `generate` handlers ([ADR-0009](docs/architecture/decisions/0009-worker.md), [ADR-0015](docs/architecture/decisions/0015-generate-task-kind.md)); `src/aegis/policy/` the versioned policy rules and the decision service ([ADR-0007](docs/architecture/decisions/0007-policy-and-decision-service.md)); `src/aegis/model_providers/` the model provider contract, the deterministic mock provider and the provider factory ([ADR-0013](docs/architecture/decisions/0013-model-provider-contract.md)); `src/aegis/integrations/ollama/` the Ollama adapter, verified against Ollama 0.34.2 ([ADR-0014](docs/architecture/decisions/0014-ollama-integration.md)); `src/aegis/runtime/` the sandbox runtime contract and `src/aegis/integrations/openshell/` its NVIDIA OpenShell adapter, verified against OpenShell 0.1.6 ([ADR-0016](docs/architecture/decisions/0016-openshell-integration.md)); `src/aegis/apps/cli/` the `aegis` command (`aegis db`, `aegis identity`, `aegis credential`, `aegis role`, `aegis model`, `aegis openshell`); `src/aegis/apps/api/` the HTTP API run by `make api` ([ADR-0004](docs/architecture/decisions/0004-api-foundation.md), [ADR-0011](docs/architecture/decisions/0011-task-api.md)); and `src/aegis/apps/worker/` the worker run by `make worker`. `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
 
 ## Planned additions
 
@@ -910,7 +912,6 @@ AEGIS/
 │       ├── observability/
 │       │
 │       └── integrations/
-│           ├── openshell/
 │           ├── langfuse/
 │           └── opentelemetry/
 │
@@ -1646,12 +1647,12 @@ make benchmark
 - Migration status (the schema is at the latest revision).
 - Environment configuration (`.env`, including the API, worker and model settings).
 - The model provider: required only when `AEGIS_MODEL_PROVIDER=ollama`, when the local Ollama server must be reachable, at the verified version, with the configured model present, local and matching its pinned digest.
+- NVIDIA OpenShell: skipped while `AEGIS_SANDBOX_RUNTIME=none`. Required when it is `openshell`: Landlock ABI 3 or later, and the CLI, prover and gateway at the verified 0.1.6, connected, with AEGIS's workspace present and no global policy.
 
 It also runs two optional checks: whether it runs inside the project `.venv`, and whether `.env` grants access to other users.
 
 Planned checks are listed as "not checked" until their phase implements them:
 
-- OpenShell availability when enabled (Phase 3).
 - Langfuse availability when enabled (Phase 8).
 
 Every check is either required or optional, and is reported as passed, warning, failed or skipped. A required check that fails or cannot run makes `make doctor` exit non-zero.
@@ -1782,7 +1783,7 @@ AEGIS is an evolving research and engineering project.
 
 The architecture describes the intended end state. Components must be implemented incrementally and marked complete only after their acceptance tests pass.
 
-Phases 0, 1 and 2 are implemented: see [docs/development/getting-started.md](docs/development/getting-started.md), the [Phase 1 threat model](docs/security/phase-1-threat-model.md) and the [Phase 2 threat model](docs/security/phase-2-threat-model.md). Phase 2's acceptance workflow, a `generate` task from the API through the worker to its audited result, passes with the mock provider in CI and with a local Ollama model through `make test-local-ai`. No phase provides runtime isolation; OpenShell enforcement arrives in Phase 3.
+Phases 0, 1 and 2 are implemented: see [docs/development/getting-started.md](docs/development/getting-started.md), the [Phase 1 threat model](docs/security/phase-1-threat-model.md) and the [Phase 2 threat model](docs/security/phase-2-threat-model.md). Phase 2's acceptance workflow, a `generate` task from the API through the worker to its audited result, passes with the mock provider in CI and with a local Ollama model through `make test-local-ai`. Phase 3 (OpenShell integration) is in progress: the sandbox runtime contract and a version-pinned OpenShell adapter exist and are verified against OpenShell 0.1.6, but no AEGIS workload runs in a sandbox yet. No phase yet provides runtime isolation for AEGIS workloads.
 
 | Capability | Target status |
 |---|---|
@@ -1793,7 +1794,7 @@ Phases 0, 1 and 2 are implemented: see [docs/development/getting-started.md](doc
 | API, worker, database and configuration (Phase 1) | Implemented |
 | Model provider abstraction (Phase 2) | Implemented: a deterministic mock, a local Ollama provider and the `generate` task kind |
 | Ollama integration | Implemented: local models on `127.0.0.1` only, pinned image and model digests, verified on Ollama 0.34.2 |
-| NVIDIA OpenShell integration | Planned |
+| NVIDIA OpenShell integration | Partially implemented: a version-pinned adapter verified on 0.1.6; no AEGIS workload runs under it yet |
 | Agent orchestration | Planned |
 | Provenance engine | Planned |
 | Risk and policy engine | Planned |

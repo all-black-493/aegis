@@ -1,6 +1,6 @@
 # Getting started
 
-AEGIS has implemented **Phase 0** (the local development foundation) and **Phase 1** (API, worker, database and configuration). **Phase 2** (model provider abstraction). The repository provides:
+AEGIS has implemented **Phase 0** (the local development foundation), **Phase 1** (API, worker, database and configuration) and **Phase 2** (model provider abstraction). **Phase 3** (NVIDIA OpenShell integration) is in progress. The repository provides:
 
 - a PostgreSQL service with least-privilege database roles and migrations;
 - an append-only audit store;
@@ -11,12 +11,13 @@ AEGIS has implemented **Phase 0** (the local development foundation) and **Phase
 - task, decision and history storage whose integrity rules the database enforces;
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
 - the model provider contract, a deterministic, offline mock provider and an adapter for a local Ollama server, used by `generate` tasks;
+- the sandbox runtime contract and a version-pinned NVIDIA OpenShell adapter (no task uses it yet);
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling, including a security suite and an end-to-end test;
 - the Phase 1 threat model, `docs/security/phase-1-threat-model.md`, and the Phase 2 threat model, `docs/security/phase-2-threat-model.md`.
 
-The worker runs only `noop`, `wait` and `generate`. The first two have no effects outside AEGIS; `generate` sends one prompt to the configured model (the mock by default, or a local Ollama on `127.0.0.1`) and stores the text it returns. There is no agent execution or OpenShell integration yet, and AEGIS claims no filesystem, network or process isolation. Nothing executes untrusted workloads. The API and worker run as processes on the host; containers for them are planned, not built.
+The worker runs only `noop`, `wait` and `generate`. The first two have no effects outside AEGIS; `generate` sends one prompt to the configured model (the mock by default, or a local Ollama on `127.0.0.1`) and stores the text it returns. There is no agent execution, no AEGIS workload runs under OpenShell yet, and AEGIS claims no filesystem, network or process isolation for its own workloads. Nothing executes untrusted workloads. The API and worker run as processes on the host; containers for them are planned, not built.
 
 ## Supported platform
 
@@ -74,6 +75,8 @@ make down
 | `make test-integration` | Runs the integration tests and the end-to-end test against the running PostgreSQL. Requires `make up`. |
 | `make test-security` | Runs the security suite (`tests/security`) against the running PostgreSQL. Requires `make up`. |
 | `make test-local-ai` | Runs the tests marked `local_ai` against the real local model. Requires `make up-local-ai`, `make model-pull` and `AEGIS_OLLAMA_MODEL`. Not part of CI. |
+| `make openshell-init` | Creates AEGIS's OpenShell workspace if it does not exist, then checks the runtime. Requires OpenShell 0.1.6. |
+| `make test-openshell` | Runs the tests marked `openshell` against the real OpenShell gateway. Requires `make openshell-init` and the local `ubuntu:24.04` image. Not part of CI. |
 | `make lint` | Checks formatting and lint rules with Ruff. |
 | `make format` | Sorts imports and formats the code with Ruff. |
 | `make typecheck` | Type-checks `src/` and `tests/` with mypy in strict mode. |
@@ -100,6 +103,9 @@ Every target exits non-zero on failure.
 | `AEGIS_OLLAMA_MODEL` | none (not in `.env.example`) | Local Ollama model, such as `qwen3:0.6b`; required when the provider is `ollama`. Registry hosts are refused. |
 | `AEGIS_OLLAMA_MODEL_DIGEST` | none (not in `.env.example`) | Optional pin: the model's 64-character digest |
 | `AEGIS_MODEL_TIMEOUT_SECONDS` | `120` (not in `.env.example`) | How long a model call may wait for output, 5–600 |
+| `AEGIS_SANDBOX_RUNTIME` | `none` (not in `.env.example`) | `none` (every sandbox operation is refused) or `openshell` (see NVIDIA OpenShell below) |
+| `AEGIS_OPENSHELL_GATEWAY` | `openshell` (not in `.env.example`) | The registered OpenShell gateway AEGIS uses |
+| `AEGIS_OPENSHELL_WORKSPACE` | `aegis` (not in `.env.example`) | The OpenShell workspace that holds AEGIS's sandboxes; `default` is refused |
 | `AEGIS_POSTGRES_USER` | `aegis` | PostgreSQL bootstrap superuser, used only to create roles and databases |
 | `AEGIS_POSTGRES_DB` | `aegis` | PostgreSQL database |
 | `AEGIS_POSTGRES_PASSWORD` | generated | Bootstrap superuser password. Older 48-character values remain valid. |
@@ -280,6 +286,21 @@ Notes:
 - **Network:** the Ollama container itself can reach the internet, which pulls need; restricting it is OpenShell's job (Phase 3).
 - **Using it:** restart `make worker` after changing the model settings; the worker reads them once, at startup. `generate` tasks then run on the local model, and their results name its digest and Ollama version.
 
+## NVIDIA OpenShell (optional)
+
+OpenShell is the runtime enforcement boundary for AEGIS workloads from Phase 3 on. Increment 1 adds the adapter only: nothing in AEGIS runs in a sandbox yet. CI never uses a real OpenShell.
+
+1. Install NVIDIA OpenShell **0.1.6** (AEGIS refuses every other version) and start its gateway, for example the Debian package's `openshell-gateway.service` user unit. `openshell status` must report `connected`.
+2. Run `make openshell-init`. It creates the `aegis` workspace on the gateway (`AEGIS_OPENSHELL_WORKSPACE`) if it is missing, and checks the CLI, prover and gateway versions and that no global policy is active.
+3. Add `AEGIS_SANDBOX_RUNTIME=openshell` to `.env`, then run `make doctor` (the OpenShell check is now required) and `make test-openshell`.
+
+Notes:
+
+- **What AEGIS may do on the gateway:** only the commands listed in ADR-0016, only in its own workspace, and only to sandboxes named `aegis-*` and labelled `aegis.managed=true`. It never sets a global policy, attaches providers or changes a running sandbox's policy.
+- **Shared gateway:** on a local gateway without OIDC roles, the CLI identity is a Platform Admin. AEGIS restricts itself in code; the workspace is a scope, not an access boundary.
+- **No downloads:** the tests use the local `ubuntu:24.04` image and fail with a hint if it is missing.
+- **Upgrades:** a new OpenShell release must be re-verified before AEGIS accepts it (ADR-0016). Consider `sudo apt-mark hold openshell`.
+
 ## The doctor
 
 `make doctor` prints one line per check. Each check is **required** or **optional**, with a status of `PASS`, `WARN`, `FAIL` or `SKIP`.
@@ -287,7 +308,8 @@ Notes:
 - **Required:** Python 3.13, uv, Docker Engine, Docker Compose v2, `.env` configuration, disk space, memory, the PostgreSQL host port, the PostgreSQL service (Compose healthcheck plus a TCP connection from the host), and database migrations (the schema is at the latest revision).
 - **Optional:** whether the doctor runs inside the project `.venv`, whether `.env` grants any permission to other users or groups, and whether `.env` defines every variable in `.env.example`.
 - **Model provider:** optional and passing with the mock. Required when `AEGIS_MODEL_PROVIDER=ollama`: the local server must be reachable, the configured model present, local and matching any pinned digest. A server version other than the verified 0.34.2 is a warning.
-- **Not checked:** NVIDIA OpenShell (Phase 3) and Langfuse/OpenTelemetry (Phase 8). These are listed separately and never reported as passing.
+- **NVIDIA OpenShell:** optional and skipped while `AEGIS_SANDBOX_RUNTIME=none`, which refuses every sandbox operation. Required when it is `openshell`: Landlock ABI 3 or later, the CLI, prover and gateway at the verified 0.1.6, the gateway connected, AEGIS's workspace present and no global policy active.
+- **Not checked:** Langfuse/OpenTelemetry (Phase 8). It is listed separately and never reported as passing.
 
 The `.env` configuration check also validates `AEGIS_ENV` and `AEGIS_LOG_LEVEL`, requires every secret (the token pepper must be at least 32 characters), and rejects unknown `AEGIS_*` names.
 
@@ -313,6 +335,7 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
   - verify the task API: idempotent submission (including concurrent requests), the quota, refusals saved as decisions, hidden tasks, audited privileged reads, cancellation in every state, saved decisions satisfying C1–C9, and that a failed audit write leaves no task, decision or event;
   - verify the Compose configuration of the optional Ollama service (profile, digest pin, loopback-only port, hardening);
   - verify the Ollama adapter against a fake Ollama server on `127.0.0.1`: model checks, streaming, limits, refusals of tool calls and remote models, timeouts, stopping, and that prompts and output never reach logs or errors;
+  - verify the OpenShell adapter against a fake `openshell` and `openshell-prover`: health and its failure codes, the exact arguments of `create` and `exec`, refused or unready sandboxes left behind, exec timeouts and bounded output, confirmed deletion, paging and filtering of AEGIS's sandboxes, and prover verdicts;
   - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process;
   - verify `generate` tasks with the mock: from the API to `succeeded` with `model.generated`, refused prompts never sent, cancellation stopping the model, retries while the model is unavailable, failure codes for refused models, and a worker process with an unreachable model still running other kinds.
 
@@ -332,7 +355,9 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
     - remote, swapped, missing or misreporting models never receive the prompt;
     - a tool call or a stream that ends early stores nothing;
     - an endless stream is cut to the output limit.
-- **Shared test code** (`tests/fixtures`): the fake Ollama server and the helpers that start and stop real processes.
+  - the sandbox runtime boundary, against a fake `openshell` CLI: no AEGIS secret or `OPENSHELL_*` override reaches the CLI, only allow-listed commands run in AEGIS's workspace, other sandboxes are never listed or deleted, an unverified or unreachable runtime creates nothing, and a disabled runtime starts no process.
+- **OpenShell tests** (marked `openshell`, run only by `make test-openshell`) check the real gateway: the verified version, a sandbox's lifecycle and user, exec timeouts, the effective policy against its boundary through the prover, and the prover's refusals. `make test-integration` and CI deselect them.
+- **Shared test code** (`tests/fixtures`): the fake Ollama server, the fake `openshell` and `openshell-prover`, test-only OpenShell policies, and the helpers that start and stop real processes.
 
 Integration, end-to-end and security tests fail, never skip, when PostgreSQL or the settings are missing. They share the `<AEGIS_POSTGRES_DB>_test` database, recreated for each run; one security test also recreates `<AEGIS_POSTGRES_DB>_outdated_test`. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 
@@ -349,6 +374,7 @@ Integration, end-to-end and security tests fail, never skip, when PostgreSQL or 
 | `make test-integration` | All integration and end-to-end tests pass. |
 | `make test-security` | All security tests pass. |
 | `make up-local-ai`, `make model-pull`, `make test-local-ai` (optional) | Both containers report `Healthy`; the pull prints `is ready: digest …`; all local AI tests pass. |
+| `make openshell-init`, `make test-openshell` (optional) | `OpenShell 0.1.6 is ready`; all OpenShell tests pass. |
 | `make api`, then `curl http://127.0.0.1:8000/health/ready` | `{"status":"ready"}` |
 | `make down`, then `make up` | Previously stored data is still present. |
 

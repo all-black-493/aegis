@@ -20,6 +20,7 @@ from aegis.config.settings import (
     load_common_settings,
     load_database_settings,
     load_model_settings,
+    load_runtime_settings,
     load_token_pepper,
 )
 from aegis.db.admin import bootstrap
@@ -27,7 +28,9 @@ from aegis.db.engine import create_database_engine
 from aegis.db.migrate import schema_status, upgrade
 from aegis.identity.admin import AdministrationError, IdentityAdministration
 from aegis.integrations.ollama.provider import OllamaProvider, pull_model
+from aegis.integrations.openshell.runtime import OpenShellRuntime
 from aegis.model_providers.contract import ModelProviderError
+from aegis.runtime.contract import SandboxRuntimeError
 
 type Handler = Callable[[Mapping[str, str], CommonSettings, argparse.Namespace], int]
 
@@ -38,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     handler: Handler = args.handler
     try:
         return handler(environ, load_common_settings(environ), args)
-    except (SettingsError, AdministrationError, ModelProviderError) as error:
+    except (SettingsError, AdministrationError, ModelProviderError, SandboxRuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
     except (psycopg.Error, SQLAlchemyError, CommandError) as error:
         lines = str(error).strip().splitlines()
@@ -202,6 +205,24 @@ def _model_pull(
     return 0
 
 
+def _openshell_init(
+    environ: Mapping[str, str], common: CommonSettings, args: argparse.Namespace
+) -> int:
+    openshell = load_runtime_settings(environ).openshell
+    configure_logging(common)
+    runtime = OpenShellRuntime(openshell)
+    created = runtime.ensure_workspace()
+    status = runtime.check()
+    if not status.healthy:
+        raise AdministrationError(f"OpenShell is not usable: {status.detail}")
+    action = "created" if created else "already exists"
+    print(
+        f"workspace {openshell.workspace} {action} on gateway {openshell.gateway};"
+        f" OpenShell {status.version} is ready"
+    )
+    return 0
+
+
 type Subcommands = argparse._SubParsersAction[argparse.ArgumentParser]
 
 
@@ -275,6 +296,13 @@ def _parser() -> argparse.ArgumentParser:
     model.add_parser(
         "pull", help="pull AEGIS_OLLAMA_MODEL into the local Ollama server (downloads it)"
     ).set_defaults(handler=_model_pull)
+
+    openshell = groups.add_parser("openshell", help="manage the OpenShell runtime").add_subparsers(
+        dest="command", required=True
+    )
+    openshell.add_parser(
+        "init", help="create AEGIS's OpenShell workspace and check the runtime"
+    ).set_defaults(handler=_openshell_init)
     return parser
 
 

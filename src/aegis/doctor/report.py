@@ -4,10 +4,7 @@ from aegis.doctor.model import Diagnosis, Requirement, Status
 
 REDACTED = "[REDACTED]"
 
-NOT_CHECKED = (
-    ("NVIDIA OpenShell", "Phase 3; untrusted execution is unavailable until then"),
-    ("Langfuse and OpenTelemetry", "Phase 8"),
-)
+NOT_CHECKED = (("Langfuse and OpenTelemetry", "Phase 8"),)
 
 
 def render(diagnosis: Diagnosis) -> str:

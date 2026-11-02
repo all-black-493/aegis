@@ -37,7 +37,10 @@ testpaths = ["tests/unit"]
 addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
 xfail_strict = true
 filterwarnings = ["error"]
-markers = ["local_ai: needs the local-ai Ollama service and AEGIS_OLLAMA_MODEL pulled"]
+markers = [
+    "local_ai: needs the local-ai Ollama service and AEGIS_OLLAMA_MODEL pulled",
+    "openshell: needs the real OpenShell 0.1.6 gateway and AEGIS's workspace",
+]
 
 [tool.mypy]
 python_version = "3.13"

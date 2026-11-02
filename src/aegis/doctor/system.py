@@ -1,3 +1,4 @@
+import ctypes
 import shutil
 import socket
 import subprocess
@@ -7,12 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from aegis.config.settings import ModelSettings
+from aegis.config.settings import ModelSettings, RuntimeSettings
 from aegis.model_providers.contract import ProviderStatus
 from aegis.model_providers.factory import build_provider
+from aegis.runtime.contract import RuntimeStatus
+from aegis.runtime.factory import build_runtime
 
 COMMAND_TIMEOUT_SECONDS = 15.0
 CONNECT_TIMEOUT_SECONDS = 2.0
+LANDLOCK_CREATE_RULESET = 444
+LANDLOCK_CREATE_RULESET_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,8 @@ class System(Protocol):
     def can_bind(self, host: str, port: int) -> bool: ...
     def can_connect(self, host: str, port: int) -> bool: ...
     def model_status(self, settings: ModelSettings) -> ProviderStatus: ...
+    def runtime_status(self, settings: RuntimeSettings) -> RuntimeStatus: ...
+    def landlock_abi(self) -> int | None: ...
 
 
 class HostSystem:
@@ -105,3 +112,21 @@ class HostSystem:
 
     def model_status(self, settings: ModelSettings) -> ProviderStatus:
         return build_provider(settings).check()
+
+    def runtime_status(self, settings: RuntimeSettings) -> RuntimeStatus:
+        return build_runtime(settings).check()
+
+    def landlock_abi(self) -> int | None:
+        # landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION) returns the ABI
+        # version without creating anything; the syscall number is shared by x86_64 and arm64.
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            abi = libc.syscall(
+                LANDLOCK_CREATE_RULESET,
+                None,
+                ctypes.c_size_t(0),
+                ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION),
+            )
+        except (OSError, AttributeError):
+            return None
+        return abi if isinstance(abi, int) and abi > 0 else None
