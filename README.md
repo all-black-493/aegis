@@ -863,6 +863,8 @@ AEGIS/
 │       ├── db/
 │       ├── doctor/
 │       ├── identity/
+│       ├── integrations/
+│       │   └── ollama/
 │       ├── jobs/
 │       ├── model_providers/
 │       ├── policy/
@@ -884,7 +886,7 @@ AEGIS/
 └── uv.lock
 ```
 
-`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations; `src/aegis/audit/` the append-only audit store ([ADR-0010](docs/architecture/decisions/0010-audit-store.md)); `src/aegis/authorization/` the role and permission catalog, `authorize()` and the shared security-decision contract ([ADR-0006](docs/architecture/decisions/0006-authorization-and-decision-contract.md)); `src/aegis/identity/` identities, role assignments, API tokens and their administration ([ADR-0005](docs/architecture/decisions/0005-identities-and-credentials.md)); `src/aegis/tasks/` the task state machine, task and decision storage, guarded transitions ([ADR-0008](docs/architecture/decisions/0008-task-storage-and-integrity.md)) and the task service; `src/aegis/jobs/` the jobs table, the worker and the `noop` and `wait` handlers ([ADR-0009](docs/architecture/decisions/0009-worker.md)); `src/aegis/policy/` the versioned policy rules and the decision service ([ADR-0007](docs/architecture/decisions/0007-policy-and-decision-service.md)); `src/aegis/model_providers/` the model provider contract, the deterministic mock provider and the provider factory ([ADR-0013](docs/architecture/decisions/0013-model-provider-contract.md)); `src/aegis/apps/cli/` the `aegis` command (`aegis db`, `aegis identity`, `aegis credential`, `aegis role`); `src/aegis/apps/api/` the HTTP API run by `make api` ([ADR-0004](docs/architecture/decisions/0004-api-foundation.md), [ADR-0011](docs/architecture/decisions/0011-task-api.md)); and `src/aegis/apps/worker/` the worker run by `make worker`. `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
+`src/aegis/config/` contains operational settings, the `AEGIS_*` variable registry, `.env` handling and JSON logging with redaction. `src/aegis/db/` contains database roles, the engine and migrations; `src/aegis/audit/` the append-only audit store ([ADR-0010](docs/architecture/decisions/0010-audit-store.md)); `src/aegis/authorization/` the role and permission catalog, `authorize()` and the shared security-decision contract ([ADR-0006](docs/architecture/decisions/0006-authorization-and-decision-contract.md)); `src/aegis/identity/` identities, role assignments, API tokens and their administration ([ADR-0005](docs/architecture/decisions/0005-identities-and-credentials.md)); `src/aegis/tasks/` the task state machine, task and decision storage, guarded transitions ([ADR-0008](docs/architecture/decisions/0008-task-storage-and-integrity.md)) and the task service; `src/aegis/jobs/` the jobs table, the worker and the `noop` and `wait` handlers ([ADR-0009](docs/architecture/decisions/0009-worker.md)); `src/aegis/policy/` the versioned policy rules and the decision service ([ADR-0007](docs/architecture/decisions/0007-policy-and-decision-service.md)); `src/aegis/model_providers/` the model provider contract, the deterministic mock provider and the provider factory ([ADR-0013](docs/architecture/decisions/0013-model-provider-contract.md)); `src/aegis/integrations/ollama/` the Ollama adapter, verified against Ollama 0.34.2 ([ADR-0014](docs/architecture/decisions/0014-ollama-integration.md)); `src/aegis/apps/cli/` the `aegis` command (`aegis db`, `aegis identity`, `aegis credential`, `aegis role`); `src/aegis/apps/api/` the HTTP API run by `make api` ([ADR-0004](docs/architecture/decisions/0004-api-foundation.md), [ADR-0011](docs/architecture/decisions/0011-task-api.md)); and `src/aegis/apps/worker/` the worker run by `make worker`. `src/aegis/doctor/` contains the environment diagnostics run by `make doctor`. These are the only Python packages implemented so far.
 
 ## Planned additions
 
@@ -908,7 +910,6 @@ AEGIS/
 │       │
 │       └── integrations/
 │           ├── openshell/
-│           ├── ollama/
 │           ├── langfuse/
 │           └── opentelemetry/
 │
