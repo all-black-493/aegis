@@ -11,7 +11,8 @@ from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.contract import Effect, SecurityDecision
 from aegis.config.settings import WorkerSettings
 from aegis.jobs import repository as jobs
-from aegis.jobs.handlers import REGISTRY, Handler, HandlerContext
+from aegis.jobs.enforcement import EnforcementCheck
+from aegis.jobs.handlers import REGISTRY, EnforcementRun, Handler, HandlerContext
 from aegis.jobs.repository import JobState
 from aegis.jobs.settlement import Claim, HandlerRun, Settlement, log_task
 from aegis.jobs.supervision import Supervisor, call
@@ -49,14 +50,18 @@ class Worker:
         owner: str | None = None,
         backoff: Callable[[int], float] = exponential_backoff,
         provider: ModelProvider | None = None,
+        enforcement: EnforcementCheck | None = None,
+        sweep: Callable[[], object] | None = None,
     ) -> None:
         self._engine = engine
         self._settings = settings
         self._handlers = handlers
         self._decisions = decisions or DecisionService(recorder)
         self._backoff = backoff
-        # One provider per worker process, shared by every task's handler context.
+        # One provider and one enforcement check per worker process, shared by every task.
         self._provider = provider
+        self._enforcement = enforcement
+        self._sweep = sweep
         self._settlement = Settlement(engine, recorder, settings, self._decisions.policy, backoff)
         self._supervisor = Supervisor(engine, settings)
         self.owner = owner or f"worker-{uuid4().hex}"
@@ -70,6 +75,8 @@ class Worker:
 
     def step(self, stop: threading.Event) -> bool:
         try:
+            if self._sweep is not None:
+                self._sweep()
             recovered = self.recover()
             claimed = self.claim()
         except SQLAlchemyError as error:
@@ -109,9 +116,10 @@ class Worker:
             self._settlement.stop_early(claim, "kind_not_registered")
             return
         halt, run = threading.Event(), HandlerRun()
+        context = HandlerContext(halt, self._provider, self._enforcement_for(claim))
         thread = threading.Thread(
             target=call,
-            args=(handler, dict(claim.task.input), HandlerContext(halt, self._provider), run),
+            args=(handler, dict(claim.task.input), context, run),
             name=f"handler-{claim.task.task_id}",
             daemon=True,
         )
@@ -123,6 +131,14 @@ class Worker:
         halt.set()
         thread.join(self._settings.shutdown_grace_seconds)
         self._settlement.stop_early(claim, stopped.value)
+
+    def _enforcement_for(self, claim: Claim) -> EnforcementRun | None:
+        # Only an enforcement_check task may create a sandbox.
+        enforcement = self._enforcement
+        if enforcement is None or claim.task.kind is not TaskKind.ENFORCEMENT_CHECK:
+            return None
+        task_id, job = claim.task.task_id, claim.job
+        return lambda stop: enforcement.run(task_id, job, stop)
 
     def _admit(
         self, connection: Connection, task: TaskRecord, ref: JobRef, decision: SecurityDecision

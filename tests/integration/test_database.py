@@ -65,9 +65,11 @@ def test_downgrade_then_upgrade_round_trip(owner_engine: Engine, app_engine: Eng
         assert schema_status(connection).ready
 
 
-def test_a_downgrade_waits_for_generate_tasks_and_keeps_them_as_history(
+def test_a_downgrade_waits_for_enforcement_check_tasks_and_keeps_them_as_history(
     owner_engine: Engine, app_engine: Engine
 ) -> None:
+    # Only the latest migration is stepped back: finished tasks of its kind are kept under a
+    # NOT VALID constraint, which an earlier migration's upgrade would then refuse to validate.
     recorder = AuditRecorder(Redactor())
     name = f"downgrade-{uuid4().hex[:12]}"
     with owner_engine.begin() as connection:
@@ -80,16 +82,15 @@ def test_a_downgrade_waits_for_generate_tasks_and_keeps_them_as_history(
     service = TaskService(app_engine, recorder)
 
     def submit() -> UUID:
-        task_input = {"prompt": "Name a colour.", "max_output_tokens": 8}
-        submission = Submission("generate", task_input, f"key-{uuid4().hex}")
+        submission = Submission("enforcement_check", {}, f"key-{uuid4().hex}")
         return service.submit(actor, submission, "r").task.task_id
 
     task_id = submit()
     try:
-        with pytest.raises(DBAPIError, match="unfinished generate tasks exist"):
-            downgrade(owner_engine, "0006")
+        with pytest.raises(DBAPIError, match="unfinished enforcement_check tasks exist"):
+            downgrade(owner_engine, "0007")
         service.cancel(actor, task_id, "r")
-        downgrade(owner_engine, "0006")
+        downgrade(owner_engine, "0007")
         with pytest.raises(DBAPIError, match="ck_tasks_kind"):
             submit()
         with owner_engine.connect() as connection:

@@ -18,6 +18,8 @@ from aegis.policy.rules import (
     MAX_GENERATE_TOKENS,
     MAX_PROMPT_CHARS,
 )
+from aegis.runtime.contract import SandboxRuntimeError
+from aegis.runtime.probes.model import ProbeReport, Verdict
 from aegis.tasks.states import TaskKind
 
 MAX_WAIT_SECONDS = 300
@@ -35,12 +37,22 @@ class HandlerFailure(Exception):
         self.code = code if _CODE.fullmatch(code) else "handler_error"
 
 
+type EnforcementRun = Callable[[Callable[[], bool]], ProbeReport]
+
+
 class HandlerContext:
     # The whole interface a handler gets: no database, settings or credentials (H6). The model
-    # is reachable only through generate(), bound to this task's stop signal.
-    def __init__(self, halt: threading.Event, provider: ModelProvider | None = None) -> None:
+    # and the sandbox runtime are reachable only through generate() and check_enforcement(),
+    # each bound to this task's stop signal.
+    def __init__(
+        self,
+        halt: threading.Event,
+        provider: ModelProvider | None = None,
+        enforcement: EnforcementRun | None = None,
+    ) -> None:
         self._halt = halt
         self._provider = provider
+        self._enforcement = enforcement
 
     def stop_requested(self) -> bool:
         return self._halt.is_set()
@@ -52,6 +64,11 @@ class HandlerContext:
         if self._provider is None:
             raise HandlerFailure("model_unavailable")
         return self._provider.generate(request, self._halt.is_set)
+
+    def check_enforcement(self) -> ProbeReport:
+        if self._enforcement is None:
+            raise HandlerFailure("sandbox_unavailable")
+        return self._enforcement(self._halt.is_set)
 
 
 type Handler = Callable[[Mapping[str, Any], HandlerContext], Mapping[str, Any]]
@@ -114,6 +131,31 @@ def generate(task_input: Mapping[str, Any], context: HandlerContext) -> Mapping[
     }
 
 
+def enforcement_check(task_input: Mapping[str, Any], context: HandlerContext) -> Mapping[str, Any]:
+    if task_input:
+        raise ValueError("enforcement_check takes no input")
+    try:
+        report = context.check_enforcement()
+    except SandboxRuntimeError as error:
+        if error.retryable:
+            raise RetryableError(error.code) from None
+        raise HandlerFailure(error.code) from None
+    if report.verdict is Verdict.VIOLATED:
+        raise HandlerFailure("enforcement_violation")
+    if report.verdict is not Verdict.VERIFIED:
+        raise HandlerFailure("enforcement_inconclusive")
+    # Every check held; each one is already in the audit store as enforcement.checked.
+    return {
+        "verdict": report.verdict.value,
+        "checks": {result.check_id: result.outcome.value for result in report.results},
+    }
+
+
 REGISTRY: Mapping[TaskKind, Handler] = MappingProxyType(
-    {TaskKind.NOOP: noop, TaskKind.WAIT: wait, TaskKind.GENERATE: generate}
+    {
+        TaskKind.NOOP: noop,
+        TaskKind.WAIT: wait,
+        TaskKind.GENERATE: generate,
+        TaskKind.ENFORCEMENT_CHECK: enforcement_check,
+    }
 )

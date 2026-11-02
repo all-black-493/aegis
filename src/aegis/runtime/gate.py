@@ -1,6 +1,6 @@
 import hashlib
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -10,6 +10,7 @@ from types import MappingProxyType
 from aegis.runtime.contract import (
     ProverVerdict,
     RuntimeRefusedError,
+    RuntimeUnavailableError,
     Sandbox,
     SandboxRuntime,
     SandboxRuntimeError,
@@ -95,7 +96,8 @@ class SandboxGate:
             raise RuntimeRefusedError("no probe image is configured", code="image_missing")
         status = self._runtime.check()
         if not status.healthy:
-            raise RuntimeRefusedError("the runtime is not usable", code=status.detail)
+            error = RuntimeUnavailableError if status.retryable else RuntimeRefusedError
+            raise error("the runtime is not usable", code=status.detail)
         self._prove(self._policies.probe, "policy_refused")
         sandbox = self._runtime.create(SandboxSpec(name, self._image, self._policies.probe, labels))
         reason = "refused"
@@ -157,11 +159,15 @@ class SandboxGate:
 
 
 def clean_orphans(
-    runtime: SandboxRuntime, in_use: Callable[[Sandbox], bool], on_event: EventSink
+    runtime: SandboxRuntime, live_jobs: Callable[[], Collection[str]], on_event: EventSink
 ) -> int:
+    sandboxes = runtime.managed()
+    # Read after listing: a job is running before its sandbox exists, so the job of every listed
+    # sandbox that is still in use is found, however the two calls interleave with a claim.
+    live = live_jobs()
     deleted = 0
-    for sandbox in runtime.managed():
-        if in_use(sandbox):
+    for sandbox in sandboxes:
+        if sandbox.labels.get("aegis.job") in live:
             continue
         details = {key: sandbox.labels.get(f"aegis.{key}") for key in ("task", "job")}
         try:

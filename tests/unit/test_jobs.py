@@ -2,11 +2,15 @@ import os
 import threading
 import time
 from typing import Any
+from uuid import UUID
 
 import pytest
+from sqlalchemy import create_engine
 
 from aegis.apps.api.routes import health, v1
 from aegis.apps.worker.__main__ import main
+from aegis.audit.recorder import AuditRecorder
+from aegis.config.logs import Redactor
 from aegis.config.settings import (
     MAX_WORKER_ATTEMPTS,
     SettingsError,
@@ -15,15 +19,19 @@ from aegis.config.settings import (
     load_worker_settings,
 )
 from aegis.config.variables import SECRET_NAMES
+from aegis.jobs.enforcement import sandbox_name
 from aegis.jobs.handlers import (
     REGISTRY,
+    EnforcementRun,
     HandlerContext,
     HandlerFailure,
     RetryableError,
+    enforcement_check,
     generate,
     noop,
     wait,
 )
+from aegis.jobs.sandboxes import OrphanSweep
 from aegis.jobs.worker import BACKOFF_MAX_SECONDS, exponential_backoff
 from aegis.model_providers.contract import (
     GenerationRequest,
@@ -41,7 +49,18 @@ from aegis.policy.rules import (
     MAX_PROMPT_CHARS,
     TASK_KINDS,
 )
+from aegis.runtime.contract import (
+    SANDBOX_NAME,
+    RuntimeProtocolError,
+    RuntimeRefusedError,
+    RuntimeUnavailableError,
+    Sandbox,
+    SandboxRuntimeError,
+)
+from aegis.runtime.disabled import DisabledRuntime
+from aegis.runtime.probes.model import Kind, Outcome, ProbeReport, ProbeResult, Role, Verdict
 from aegis.tasks.states import TaskKind
+from aegis.tasks.transitions import JobRef
 
 PROMPT = {"prompt": "Name three colours.", "max_output_tokens": 64}
 
@@ -56,11 +75,15 @@ class RecordingProvider(MockProvider):
         return super().generate(request, stop_requested)
 
 
-def _context(halted: bool = False, provider: MockProvider | None = None) -> HandlerContext:
+def _context(
+    halted: bool = False,
+    provider: MockProvider | None = None,
+    enforcement: EnforcementRun | None = None,
+) -> HandlerContext:
     halt = threading.Event()
     if halted:
         halt.set()
-    return HandlerContext(halt, provider)
+    return HandlerContext(halt, provider, enforcement)
 
 
 def test_the_registry_holds_exactly_the_policy_kinds() -> None:
@@ -68,6 +91,7 @@ def test_the_registry_holds_exactly_the_policy_kinds() -> None:
         TaskKind.NOOP: noop,
         TaskKind.WAIT: wait,
         TaskKind.GENERATE: generate,
+        TaskKind.ENFORCEMENT_CHECK: enforcement_check,
     }
     assert set(REGISTRY) == set(TaskKind) == TASK_KINDS
     with pytest.raises(TypeError):
@@ -77,7 +101,7 @@ def test_the_registry_holds_exactly_the_policy_kinds() -> None:
 def test_the_handler_context_offers_no_database_settings_or_credentials() -> None:
     public = {name for name in dir(HandlerContext) if not name.startswith("_")}
 
-    assert public == {"stop_requested", "wait", "generate"}
+    assert public == {"stop_requested", "wait", "generate", "check_enforcement"}
 
 
 def test_noop_returns_an_empty_result() -> None:
@@ -284,3 +308,129 @@ def test_the_worker_forgets_every_secret_before_running_handlers(
 
     assert not SECRET_NAMES & os.environ.keys()
     assert os.environ["AEGIS_POSTGRES_DB"] == "kept"
+
+
+def _report(*outcomes: Outcome) -> ProbeReport:
+    results = tuple(
+        ProbeResult(
+            f"filesystem.check_{index}", Kind.FILESYSTEM, Role.RESTRICTION, outcome, 1, None
+        )
+        for index, outcome in enumerate(outcomes)
+    )
+    if Outcome.VIOLATED in outcomes:
+        verdict = Verdict.VIOLATED
+    elif Outcome.INCONCLUSIVE in outcomes or not outcomes:
+        verdict = Verdict.INCONCLUSIVE
+    else:
+        verdict = Verdict.VERIFIED
+    return ProbeReport(verdict, results)
+
+
+def test_an_enforcement_check_succeeds_only_when_every_check_held() -> None:
+    stops: list[bool] = []
+
+    def run(stop: Any) -> ProbeReport:
+        stops.append(stop())
+        return _report(Outcome.HELD, Outcome.HELD)
+
+    result = enforcement_check({}, _context(enforcement=run))
+
+    assert result == {
+        "verdict": "verified",
+        "checks": {"filesystem.check_0": "held", "filesystem.check_1": "held"},
+    }
+    assert stops == [False]
+
+
+@pytest.mark.parametrize(
+    ("report", "code"),
+    [
+        (_report(Outcome.HELD, Outcome.VIOLATED, Outcome.INCONCLUSIVE), "enforcement_violation"),
+        (_report(Outcome.HELD, Outcome.INCONCLUSIVE), "enforcement_inconclusive"),
+        (_report(), "enforcement_inconclusive"),
+    ],
+)
+def test_an_enforcement_check_that_did_not_verify_fails(report: ProbeReport, code: str) -> None:
+    with pytest.raises(HandlerFailure) as failed:
+        enforcement_check({}, _context(enforcement=lambda stop: report))
+
+    assert failed.value.code == code
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (RuntimeUnavailableError(code="unreachable"), RetryableError),
+        (RuntimeUnavailableError(code="canary_unavailable"), RetryableError),
+        (RuntimeRefusedError(code="policy_refused"), HandlerFailure),
+        (RuntimeRefusedError(code="image_missing"), HandlerFailure),
+        (RuntimeProtocolError(), HandlerFailure),
+    ],
+)
+def test_runtime_errors_are_retried_only_when_transient(
+    error: SandboxRuntimeError, expected: type[Exception]
+) -> None:
+    def run(stop: Any) -> ProbeReport:
+        raise error
+
+    with pytest.raises(expected) as raised:
+        enforcement_check({}, _context(enforcement=run))
+
+    if isinstance(raised.value, HandlerFailure):
+        assert raised.value.code == error.code
+
+
+def test_an_enforcement_check_without_a_runtime_fails_closed() -> None:
+    with pytest.raises(HandlerFailure) as failed:
+        enforcement_check({}, _context())
+
+    assert failed.value.code == "sandbox_unavailable"
+
+
+def test_an_enforcement_check_takes_no_input() -> None:
+    def run(stop: Any) -> ProbeReport:
+        raise AssertionError("no sandbox may be created")
+
+    with pytest.raises(ValueError, match="no input"):
+        enforcement_check({"image": "sha256:x"}, _context(enforcement=run))
+
+
+def test_the_halt_signal_reaches_the_enforcement_check() -> None:
+    seen: list[bool] = []
+
+    def run(stop: Any) -> ProbeReport:
+        seen.append(stop())
+        return _report(Outcome.INCONCLUSIVE)
+
+    with pytest.raises(HandlerFailure):
+        enforcement_check({}, _context(halted=True, enforcement=run))
+
+    assert seen == [True]
+
+
+def test_every_attempt_gets_a_sandbox_name_openshell_accepts() -> None:
+    job_id = UUID("8f4e2a6c-1b3d-4e5f-9a7b-0c1d2e3f4a5b")
+    names = {sandbox_name(JobRef(job_id, attempt)) for attempt in range(1, MAX_JOB_ATTEMPTS + 1)}
+
+    assert len(names) == MAX_JOB_ATTEMPTS
+    assert all(SANDBOX_NAME.fullmatch(name) for name in names)
+    assert sandbox_name(JobRef(job_id, 1)) == "aegis-8f4e2a6c1b-1"
+
+
+def test_the_orphan_sweep_runs_at_once_then_once_an_interval() -> None:
+    class Unreachable(DisabledRuntime):
+        listed = 0
+
+        def managed(self) -> tuple[Sandbox, ...]:
+            self.listed += 1
+            raise RuntimeUnavailableError(code="unreachable")
+
+    runtime, now = Unreachable(), [100.0]
+    engine = create_engine("postgresql+psycopg://unit:unit@127.0.0.1:9/unit")
+    sweep = OrphanSweep(engine, AuditRecorder(Redactor()), runtime, 60, lambda: now[0])
+
+    for moment in (100.0, 159.0, 160.0, 161.0):
+        now[0] = moment
+        assert sweep() == 0
+
+    assert runtime.listed == 2

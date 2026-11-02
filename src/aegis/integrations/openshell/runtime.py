@@ -66,7 +66,7 @@ class OpenShellRuntime:
             if self._global_policy_active():
                 return RuntimeStatus(False, "global_policy_active", VERIFIED_VERSION)
         except SandboxRuntimeError as error:
-            return RuntimeStatus(False, error.code)
+            return RuntimeStatus(False, error.code, retryable=error.retryable)
         return RuntimeStatus(True, "ok", VERIFIED_VERSION)
 
     def ensure_workspace(self) -> bool:

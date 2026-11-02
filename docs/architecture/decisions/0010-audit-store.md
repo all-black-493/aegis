@@ -73,6 +73,9 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 | `model.generated` | `provider`, `model`, `model_digest`, `runtime_version`, `prompt_tokens`, `output_tokens`, `duration_ms`, `finish_reason` | Phase 2, Increment 4 (the worker, ADR-0015) |
 | `sandbox.created` | `sandbox_id`, `runtime_version`, `image`, `policy_version`, `policy_fingerprint`, `policy_hash`, `prover_result` | Phase 3, Increment 2 (the sandbox gate, ADR-0017) |
 | `sandbox.deleted` | `task`, `job` (orphans only) | Phase 3, Increment 2 (the sandbox gate and orphan cleanup, ADR-0017) |
+| `enforcement.checked` | `attempt`, `check`, `kind`, `expected`, `observed`, `exit_code`, `corroborated` | Phase 3, Increment 4 (the `enforcement_check` task kind, ADR-0019) |
+
+Since Phase 3, Increment 4, the `sandbox.*` events of an `enforcement_check` task carry its task and job IDs. Orphan events do not, because their labels come from the runtime.
 
 The increments that emit these events may refine their detail keys through reviewed code changes.
 

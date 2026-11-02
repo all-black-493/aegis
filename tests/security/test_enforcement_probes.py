@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from aegis.runtime.contract import RuntimeRefusedError
-from aegis.runtime.gate import RELEASE, SandboxEvent, SandboxEventKind, SandboxGate, load_policies
+from aegis.runtime.gate import SandboxEvent, SandboxEventKind, SandboxGate, load_policies
 from aegis.runtime.probes.catalog import PROBES
 from aegis.runtime.probes.model import Outcome, Verdict
 from aegis.runtime.probes.suite import run_probes, verify_enforcement
@@ -12,8 +12,7 @@ from tests.fixtures.probe_answers import (
     FakeCanary,
     argv,
     control_hits,
-    enforcing_answers,
-    enforcing_records,
+    enforce_everything,
     fill,
 )
 
@@ -24,24 +23,7 @@ NAME = "aegis-probe-1"
 
 @pytest.fixture
 def fake(tmp_path: Path) -> FakeOpenShell:
-    # A sandbox that claims to enforce everything: each probe gets the answer its expectation
-    # describes, and the log holds a record for every network decision.
-    fake = FakeOpenShell(tmp_path / "bin")
-    answers = {
-        " ".join(command): {
-            "exit": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        }
-        for command, result in enforcing_answers(RUN).items()
-    }
-    answers["/usr/bin/cat /etc/aegis-probe-release"] = {"stdout": RELEASE + "\n"}
-    logs = "\n".join(
-        f"[1.0] [sandbox] [OCSF ] [ocsf] {r.category} [MED] {r.action} {r.detail}"
-        for r in enforcing_records(RUN)
-    )
-    fake.update(exec=answers, logs=logs)
-    return fake
+    return enforce_everything(FakeOpenShell(tmp_path / "bin"), RUN)
 
 
 def _probe(fake: FakeOpenShell, canary: FakeCanary) -> tuple[Verdict, dict[str, Outcome]]:

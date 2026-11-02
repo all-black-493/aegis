@@ -119,6 +119,8 @@ class RuntimeStatus:
     healthy: bool
     detail: str
     version: str | None = None
+    # True when the runtime may recover on its own, such as a gateway that cannot be reached.
+    retryable: bool = False
 
     def __post_init__(self) -> None:
         if not _DETAIL.fullmatch(self.detail):

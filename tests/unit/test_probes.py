@@ -273,3 +273,21 @@ def test_long_record_details_are_truncated() -> None:
     [record] = parse_records(line)
 
     assert len(record.detail) == 512
+
+
+def test_a_stopped_run_runs_no_more_probes_and_is_never_verified() -> None:
+    runtime, hits = _enforcing_runtime()
+    asked: list[None] = []
+
+    def stop() -> bool:
+        asked.append(None)
+        return len(asked) > 2
+
+    report = run_probes(
+        runtime, "aegis-probe", FakeCanary(hits), RUN, sleep=lambda _: None, stop=stop
+    )
+
+    assert len([call for call in runtime.calls if call.startswith("exec ")]) == 2
+    assert "records" not in runtime.calls
+    assert report.verdict is Verdict.INCONCLUSIVE
+    assert {r.outcome for r in report.results[2:]} == {Outcome.INCONCLUSIVE}

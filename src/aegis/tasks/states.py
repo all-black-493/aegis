@@ -9,6 +9,7 @@ class TaskKind(StrEnum):
     NOOP = "noop"
     WAIT = "wait"
     GENERATE = "generate"
+    ENFORCEMENT_CHECK = "enforcement_check"
 
 
 class TaskState(StrEnum):

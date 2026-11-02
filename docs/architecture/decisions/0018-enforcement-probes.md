@@ -46,4 +46,4 @@ AEGIS therefore needs its own evidence, gathered and judged outside the sandbox.
 - **The canary listens on the Docker bridge** for the length of a run. Any container on that bridge can reach it then; it serves a fixed reply and records only ports and paths.
 - **Exit status 1 is still ambiguous** (ADR-0016), but no restriction is judged held on exit status alone: each needs a specific error message, the OpenShell refusal, or unchanged content.
 - **The probes cover the default enforcement surface, not every OpenShell feature.** Providers, middleware, other protocols and GPUs are not exercised.
-- **No task runs the probes yet.** `enforcement_check` (Increment 4) runs them through the API and the worker and audits the report.
+- **The `enforcement_check` task kind runs the probes** through the API and the worker, and audits every check (ADR-0019). A halt signal ends a run before its next probe; probes that did not run are `inconclusive`.

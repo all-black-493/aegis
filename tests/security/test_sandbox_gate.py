@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from aegis.runtime.contract import REQUIRED_PROVER_DOMAINS, RuntimeRefusedError, Sandbox
+from aegis.runtime.contract import REQUIRED_PROVER_DOMAINS, RuntimeRefusedError
 from aegis.runtime.gate import (
     RELEASE,
     SandboxEvent,
@@ -126,10 +126,7 @@ def test_orphan_cleanup_never_touches_sandboxes_that_are_not_aegis(fake: FakeOpe
     fake.update(ignore_selector=True)
     events: list[SandboxEvent] = []
 
-    def never_in_use(sandbox: Sandbox) -> bool:
-        return False
-
-    deleted = clean_orphans(fake.runtime(), never_in_use, events.append)
+    deleted = clean_orphans(fake.runtime(), frozenset, events.append)
 
     assert deleted == 1
     assert set(fake.state["sandboxes"]) == {

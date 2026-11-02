@@ -40,25 +40,25 @@ def test_a_connected_gateway_at_the_verified_version_is_healthy(fake: FakeOpenSh
 
 
 @pytest.mark.parametrize(
-    ("change", "detail"),
+    ("change", "detail", "retryable"),
     [
-        ({"version": "0.1.7"}, "version_mismatch"),
-        ({"prover_version": "0.1.5"}, "version_mismatch"),
-        ({"gateway_version": "0.2.0"}, "version_mismatch"),
-        ({"status": "not_configured"}, "not_connected"),
-        ({"status_exit": 1}, "unreachable"),
-        ({"workspaces": ["default"]}, "workspace_missing"),
-        ({"global_policy": True}, "global_policy_active"),
+        ({"version": "0.1.7"}, "version_mismatch", False),
+        ({"prover_version": "0.1.5"}, "version_mismatch", False),
+        ({"gateway_version": "0.2.0"}, "version_mismatch", False),
+        ({"status": "not_configured"}, "not_connected", True),
+        ({"status_exit": 1}, "unreachable", True),
+        ({"workspaces": ["default"]}, "workspace_missing", False),
+        ({"global_policy": True}, "global_policy_active", False),
     ],
 )
-def test_check_explains_why_the_runtime_cannot_be_used(
-    fake: FakeOpenShell, change: dict[str, Any], detail: str
+def test_check_explains_why_the_runtime_cannot_be_used_and_whether_it_may_recover(
+    fake: FakeOpenShell, change: dict[str, Any], detail: str, retryable: bool
 ) -> None:
     fake.update(**change)
 
     status = fake.runtime().check()
 
-    assert (status.healthy, status.detail) == (False, detail)
+    assert (status.healthy, status.detail, status.retryable) == (False, detail, retryable)
 
 
 def test_a_missing_cli_is_reported(tmp_path: Path) -> None:
