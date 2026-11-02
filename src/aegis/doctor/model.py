@@ -14,6 +14,10 @@ class Status(StrEnum):
     SKIP = "skip"
 
 
+REQUIRED, OPTIONAL = Requirement.REQUIRED, Requirement.OPTIONAL
+PASS, WARN, FAIL, SKIP = Status.PASS, Status.WARN, Status.FAIL, Status.SKIP
+
+
 @dataclass(frozen=True)
 class CheckResult:
     name: str

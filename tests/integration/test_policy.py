@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -9,14 +9,11 @@ from sqlalchemy import Connection, Engine, select, text
 from aegis.audit.events import Source
 from aegis.audit.recorder import AuditRecorder
 from aegis.audit.schema import audit_events
-from aegis.authorization.access import ActorContext
 from aegis.authorization.catalog import IdentityKind, Role
 from aegis.authorization.contract import DecisionMismatchError, Effect, Stage
 from aegis.config.logs import Redactor
-from aegis.config.settings import Secret
 from aegis.identity.admin import IdentityAdministration
 from aegis.identity.schema import SYSTEM_WORKER_ID
-from aegis.jobs.repository import claim, create_job
 from aegis.policy.rules import ACTIVE_TASK_QUOTA, Outcome
 from aegis.policy.service import Decided, DecisionService, ReplayError
 from aegis.policy.version import CURRENT_POLICY
@@ -28,32 +25,11 @@ from aegis.tasks.transitions import (
     Transition,
     apply_transition,
 )
+from tests.fixtures.records import claim_job
+from tests.fixtures.services import RECORDER, Caller, make_caller
 
-RECORDER = AuditRecorder(Redactor())
 SERVICE = DecisionService(RECORDER)
 S = TaskState
-
-
-@dataclass(frozen=True)
-class Person:
-    name: str
-    actor: ActorContext
-
-
-def _person(owner_engine: Engine, *roles: Role) -> Person:
-    name = f"policy-{uuid4().hex[:12]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, roles)
-        issued = administration.issue_credential(name, Secret("p" * 32))
-    return Person(
-        name, ActorContext(identity_id, IdentityKind.HUMAN, frozenset(roles), issued.credential_id)
-    )
-
-
-@pytest.fixture
-def operator(owner_engine: Engine) -> Person:
-    return _person(owner_engine, Role.OPERATOR)
 
 
 @pytest.fixture
@@ -67,7 +43,7 @@ def app_tx(app_engine: Engine) -> Iterator[Connection]:
 
 def _submit(
     connection: Connection,
-    person: Person,
+    person: Caller,
     kind: str = "noop",
     task_input: Any = None,
     service: DecisionService = SERVICE,
@@ -124,18 +100,7 @@ def _apply(
     )
 
 
-def _job(connection: Connection, task: TaskRecord) -> JobRef:
-    job = claim(
-        connection,
-        create_job(connection, task.task_id, max_attempts=3, correlation_id=None),
-        "test-worker",
-        60,
-    )
-    assert job is not None
-    return job.ref
-
-
-def _queued(app_engine: Engine, person: Person) -> TaskRecord:
+def _queued(app_engine: Engine, person: Caller) -> TaskRecord:
     with app_engine.begin() as connection:
         _, task = _submit(connection, person)
     assert task is not None
@@ -152,7 +117,7 @@ def _saved(connection: Connection, decision_id: UUID) -> dict[str, Any]:
 
 
 def test_an_allowed_submission_is_saved_with_its_inputs_and_audited(
-    app_engine: Engine, owner_engine: Engine, operator: Person
+    app_engine: Engine, owner_engine: Engine, operator: Caller
 ) -> None:
     with app_engine.begin() as connection:
         decided, task = _submit(connection, operator)
@@ -183,7 +148,7 @@ def test_an_allowed_submission_is_saved_with_its_inputs_and_audited(
 def test_a_denied_submission_is_saved_without_a_task(
     app_tx: Connection, owner_engine: Engine
 ) -> None:
-    auditor = _person(owner_engine, Role.AUDITOR)
+    auditor = make_caller(owner_engine, Role.AUDITOR)
 
     decided, task = _submit(app_tx, auditor)
 
@@ -193,7 +158,7 @@ def test_a_denied_submission_is_saved_without_a_task(
     assert saved["reason_codes"] == ["missing_permission"]
 
 
-def test_approval_required_never_leads_to_queued(app_tx: Connection, operator: Person) -> None:
+def test_approval_required_never_leads_to_queued(app_tx: Connection, operator: Caller) -> None:
     decided, task = _submit(app_tx, operator, "wait", {"seconds": 120})
 
     assert decided.decision.effect is Effect.APPROVAL_REQUIRED
@@ -221,7 +186,7 @@ def test_approval_required_never_leads_to_queued(app_tx: Connection, operator: P
 
 
 def test_the_active_task_quota_denies_further_submissions(
-    app_tx: Connection, operator: Person
+    app_tx: Connection, operator: Caller
 ) -> None:
     for _ in range(ACTIVE_TASK_QUOTA):
         _submit(app_tx, operator)
@@ -232,7 +197,7 @@ def test_the_active_task_quota_denies_further_submissions(
     assert decided.decision.reason_codes == ("active_task_quota_exceeded",)
 
 
-def test_evaluator_errors_are_denied_and_saved(app_tx: Connection, operator: Person) -> None:
+def test_evaluator_errors_are_denied_and_saved(app_tx: Connection, operator: Caller) -> None:
     def broken(_facts: object) -> Outcome | None:
         raise RuntimeError("rule bug")
 
@@ -244,10 +209,10 @@ def test_evaluator_errors_are_denied_and_saved(app_tx: Connection, operator: Per
     assert _saved(app_tx, decided.decision.decision_id)["reason_codes"] == ["evaluation_error"]
 
 
-def test_an_allowed_execution_runs_the_task(app_tx: Connection, operator: Person) -> None:
+def test_an_allowed_execution_runs_the_task(app_tx: Connection, operator: Caller) -> None:
     _, task = _submit(app_tx, operator)
     assert task is not None
-    job = _job(app_tx, task)
+    job = claim_job(app_tx, task)
 
     decided = SERVICE.execution(app_tx, task, job)
     SERVICE.record(app_tx, decided)
@@ -268,7 +233,7 @@ def test_an_allowed_execution_runs_the_task(app_tx: Connection, operator: Person
     ],
 )
 def test_execution_rules_e2_to_e4_fail_the_task(
-    app_engine: Engine, owner_engine: Engine, operator: Person, change: str, reason: str
+    app_engine: Engine, owner_engine: Engine, operator: Caller, change: str, reason: str
 ) -> None:
     task = _queued(app_engine, operator)
     with owner_engine.begin() as connection:
@@ -281,7 +246,7 @@ def test_execution_rules_e2_to_e4_fail_the_task(
             assert operator.actor.credential_id is not None
             administration.revoke_credential(operator.actor.credential_id)
     with app_engine.begin() as connection:
-        job = _job(connection, task)
+        job = claim_job(connection, task)
         decided = SERVICE.execution(connection, task, job)
         SERVICE.record(connection, decided)
         failed = _apply(connection, task, S.FAILED, decided, job)
@@ -293,7 +258,7 @@ def test_execution_rules_e2_to_e4_fail_the_task(
 
 
 def test_an_executor_without_the_worker_role_is_refused(
-    app_engine: Engine, owner_engine: Engine, operator: Person
+    app_engine: Engine, owner_engine: Engine, operator: Caller
 ) -> None:
     task = _queued(app_engine, operator)
 
@@ -310,11 +275,11 @@ def test_an_executor_without_the_worker_role_is_refused(
 
 
 def test_cancellation_decisions_are_saved_whatever_their_effect(
-    app_tx: Connection, owner_engine: Engine, operator: Person
+    app_tx: Connection, owner_engine: Engine, operator: Caller
 ) -> None:
     _, task = _submit(app_tx, operator)
     assert task is not None
-    stranger = _person(owner_engine, Role.OPERATOR)
+    stranger = make_caller(owner_engine, Role.OPERATOR)
 
     denied = SERVICE.cancellation(app_tx, stranger.actor, task)
     SERVICE.record(app_tx, denied)
@@ -331,9 +296,9 @@ def test_cancellation_decisions_are_saved_whatever_their_effect(
 
 
 def test_saved_decisions_replay_identically(
-    app_tx: Connection, owner_engine: Engine, operator: Person
+    app_tx: Connection, owner_engine: Engine, operator: Caller
 ) -> None:
-    auditor = _person(owner_engine, Role.AUDITOR)
+    auditor = make_caller(owner_engine, Role.AUDITOR)
     decisions = [
         _submit(app_tx, operator)[0],
         _submit(app_tx, operator, "wait", {"seconds": 45})[0],
@@ -344,7 +309,7 @@ def test_saved_decisions_replay_identically(
     ]
     _, task = _submit(app_tx, operator)
     assert task is not None
-    execution = SERVICE.execution(app_tx, task, _job(app_tx, task))
+    execution = SERVICE.execution(app_tx, task, claim_job(app_tx, task))
     SERVICE.record(app_tx, execution)
 
     for decided in [*decisions, execution]:
@@ -352,7 +317,7 @@ def test_saved_decisions_replay_identically(
         assert replayed == saved
 
 
-def test_replay_refuses_decisions_from_another_policy(app_tx: Connection, operator: Person) -> None:
+def test_replay_refuses_decisions_from_another_policy(app_tx: Connection, operator: Caller) -> None:
     decided, _ = _submit(app_tx, operator)
     newer = DecisionService(RECORDER, replace(CURRENT_POLICY, version="later", digest="b" * 64))
 

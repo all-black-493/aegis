@@ -1,33 +1,26 @@
 import logging
 import os
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine
 
 from aegis.apps.api.app import create_app
 from aegis.apps.api.context import ApiContext
-from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.access import ActorContext
-from aegis.authorization.catalog import IdentityKind, Role
-from aegis.config.logs import Redactor
 from aegis.config.settings import (
     DatabaseSettings,
     Environment,
     WorkerSettings,
-    load_token_pepper,
 )
-from aegis.identity.admin import IdentityAdministration
 from aegis.jobs.worker import Claim, Worker
 from aegis.model_providers.contract import (
     Generation,
@@ -40,19 +33,13 @@ from aegis.model_providers.contract import (
     StopCheck,
 )
 from aegis.model_providers.mock import MOCK_IDENTITY, MockProvider
-from aegis.tasks.repository import TaskRecord, get_task
+from aegis.tasks.repository import TaskRecord
 from aegis.tasks.service import Submission, TaskService
 from aegis.tasks.states import TaskState
+from tests.fixtures import records
+from tests.fixtures.processes import unused_port, wait_for
+from tests.fixtures.services import FAST_WORKER, PEPPER, RECORDER, Caller
 
-PEPPER = load_token_pepper(os.environ)
-RECORDER = AuditRecorder(Redactor([PEPPER.reveal()]))
-FAST = WorkerSettings(
-    poll_seconds=0.05,
-    lease_seconds=10,
-    heartbeat_seconds=0.1,
-    shutdown_grace_seconds=0.3,
-    max_attempts=3,
-)
 PROMPT = "Summarise the confidential launch plan in one line."
 INPUT = {"prompt": PROMPT, "max_output_tokens": 64}
 S = TaskState
@@ -72,21 +59,8 @@ class RecordingProvider:
         return self._inner.generate(request, stop_requested)
 
 
-@pytest.fixture
-def operator(owner_engine: Engine) -> tuple[ActorContext, str]:
-    name = f"generate-test-{uuid4().hex[:12]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, [Role.OPERATOR])
-        issued = administration.issue_credential(name, PEPPER)
-    actor = ActorContext(
-        identity_id, IdentityKind.HUMAN, frozenset({Role.OPERATOR}), issued.credential_id
-    )
-    return actor, issued.token.reveal()
-
-
 def _worker(
-    app_engine: Engine, provider: ModelProvider | None, settings: WorkerSettings = FAST
+    app_engine: Engine, provider: ModelProvider | None, settings: WorkerSettings = FAST_WORKER
 ) -> Worker:
     return Worker(app_engine, RECORDER, settings, backoff=lambda _: 0, provider=provider)
 
@@ -96,29 +70,8 @@ def _submit(app_engine: Engine, actor: ActorContext, task_input: dict[str, Any])
     return TaskService(app_engine, RECORDER).submit(actor, submission, uuid4().hex).task
 
 
-def _task(app_engine: Engine, task_id: UUID) -> TaskRecord:
-    with app_engine.connect() as connection:
-        task = get_task(connection, task_id)
-    assert task is not None
-    return task
-
-
-def _rows(owner_engine: Engine, sql: str, **params: Any) -> list[dict[str, Any]]:
-    with owner_engine.connect() as connection:
-        return [dict(row) for row in connection.execute(text(sql), params).mappings()]
-
-
-def _events(owner_engine: Engine, task_id: UUID) -> list[str]:
-    rows = _rows(
-        owner_engine,
-        "SELECT event_type FROM aegis.audit_events WHERE task_id = :id ORDER BY id",
-        id=task_id,
-    )
-    return [row["event_type"] for row in rows]
-
-
 def _stored_text(owner_engine: Engine, table: str, task_id: UUID) -> str:
-    rows = _rows(
+    rows = records.rows(
         owner_engine,
         f"SELECT row_to_json(t)::text AS row FROM aegis.{table} t WHERE task_id = :id",
         id=task_id,
@@ -126,22 +79,14 @@ def _stored_text(owner_engine: Engine, table: str, task_id: UUID) -> str:
     return "\n".join(row["row"] for row in rows)
 
 
-def _wait_for(condition: Callable[[], bool], timeout: float, what: str) -> None:
-    deadline = time.monotonic() + timeout
-    while not condition():
-        if time.monotonic() > deadline:
-            pytest.fail(f"timed out waiting for {what}")
-        time.sleep(0.05)
-
-
 def test_a_generate_task_runs_end_to_end_and_records_the_model(
     app_engine: Engine,
     owner_engine: Engine,
-    operator: tuple[ActorContext, str],
+    operator: Caller,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    headers = {"Authorization": f"Bearer {operator[1]}"}
+    headers = {"Authorization": f"Bearer {operator.token}"}
     app = create_app(ApiContext(app_engine, PEPPER, RECORDER), Environment.TEST)
     with TestClient(app) as client:
         submitted = client.post(
@@ -164,7 +109,7 @@ def test_a_generate_task_runs_end_to_end_and_records_the_model(
         MOCK_IDENTITY.digest,
     )
     assert (result["temperature"], result["seed"], result["finish_reason"]) == (0.0, 0, "stop")
-    assert _events(owner_engine, task_id) == [
+    assert records.task_events(owner_engine, task_id) == [
         "security.decision",
         "task.created",
         "task.transitioned",
@@ -173,7 +118,7 @@ def test_a_generate_task_runs_end_to_end_and_records_the_model(
         "task.transitioned",
         "model.generated",
     ]
-    [event] = _rows(
+    [event] = records.rows(
         owner_engine,
         "SELECT outcome, reason_code, actor_kind, job_id, details FROM aegis.audit_events"
         " WHERE task_id = :id AND event_type = 'model.generated'",
@@ -216,7 +161,7 @@ def test_a_generate_task_runs_end_to_end_and_records_the_model(
     ],
 )
 def test_a_refused_prompt_is_denied_and_never_sent(
-    app_engine: Engine, operator: tuple[ActorContext, str], task_input: dict[str, Any]
+    app_engine: Engine, operator: Caller, task_input: dict[str, Any]
 ) -> None:
     provider = RecordingProvider()
     app = create_app(ApiContext(app_engine, PEPPER, RECORDER), Environment.TEST)
@@ -225,7 +170,7 @@ def test_a_refused_prompt_is_denied_and_never_sent(
             "/v1/tasks",
             json={"kind": "generate", "input": task_input},
             headers={
-                "Authorization": f"Bearer {operator[1]}",
+                "Authorization": f"Bearer {operator.token}",
                 "Idempotency-Key": f"generate-{uuid4().hex}",
             },
         )
@@ -236,9 +181,9 @@ def test_a_refused_prompt_is_denied_and_never_sent(
 
 
 def test_cancelling_a_generation_stops_the_model(
-    app_engine: Engine, owner_engine: Engine, operator: tuple[ActorContext, str]
+    app_engine: Engine, owner_engine: Engine, operator: Caller
 ) -> None:
-    task = _submit(app_engine, operator[0], INPUT)
+    task = _submit(app_engine, operator.actor, INPUT)
     worker = _worker(app_engine, MockProvider(delay_seconds=30))
     claim = worker.claim()
     assert isinstance(claim, Claim)
@@ -246,30 +191,34 @@ def test_cancelling_a_generation_stops_the_model(
     thread = threading.Thread(target=worker.execute, args=(claim, threading.Event()), daemon=True)
     thread.start()
 
-    TaskService(app_engine, RECORDER).cancel(operator[0], task.task_id, uuid4().hex)
+    TaskService(app_engine, RECORDER).cancel(operator.actor, task.task_id, uuid4().hex)
     thread.join(10)
 
     assert not thread.is_alive()
     assert time.monotonic() - started < 5
-    assert _task(app_engine, task.task_id).state is S.CANCELLED
-    assert "model.generated" not in _events(owner_engine, task.task_id)
+    assert records.task(app_engine, task.task_id).state is S.CANCELLED
+    assert "model.generated" not in records.task_events(owner_engine, task.task_id)
 
 
 def test_an_unavailable_model_is_retried_then_the_task_fails(
-    app_engine: Engine, owner_engine: Engine, operator: tuple[ActorContext, str]
+    app_engine: Engine, owner_engine: Engine, operator: Caller
 ) -> None:
-    task = _submit(app_engine, operator[0], INPUT)
+    task = _submit(app_engine, operator.actor, INPUT)
     provider = RecordingProvider(MockProvider(failure=ProviderUnavailableError()))
-    worker = _worker(app_engine, provider, replace(FAST, max_attempts=2))
+    worker = _worker(app_engine, provider, replace(FAST_WORKER, max_attempts=2))
 
     assert worker.step(threading.Event())
-    assert _task(app_engine, task.task_id).state is S.QUEUED
+    assert records.task(app_engine, task.task_id).state is S.QUEUED
     assert worker.step(threading.Event())
 
-    final = _task(app_engine, task.task_id)
+    final = records.task(app_engine, task.task_id)
     assert (final.state, final.failure_code, final.result) == (S.FAILED, "attempts_exhausted", None)
     assert provider.prompts == [PROMPT, PROMPT]
-    assert [e for e in _events(owner_engine, task.task_id) if e.startswith(("job.", "model."))] == [
+    assert [
+        e
+        for e in records.task_events(owner_engine, task.task_id)
+        if e.startswith(("job.", "model."))
+    ] == [
         "job.interrupted",
         "job.retried",
         "job.interrupted",
@@ -289,31 +238,24 @@ def test_an_unavailable_model_is_retried_then_the_task_fails(
 def test_a_refused_model_fails_the_task_with_its_code_and_no_retry(
     app_engine: Engine,
     owner_engine: Engine,
-    operator: tuple[ActorContext, str],
+    operator: Caller,
     failure: ModelProviderError | None,
     code: str,
 ) -> None:
-    task = _submit(app_engine, operator[0], INPUT)
+    task = _submit(app_engine, operator.actor, INPUT)
     provider = None if failure is None else MockProvider(failure=failure)
 
     assert _worker(app_engine, provider).step(threading.Event())
 
-    final = _task(app_engine, task.task_id)
+    final = records.task(app_engine, task.task_id)
     assert (final.state, final.failure_code, final.result) == (S.FAILED, code, None)
-    [job] = _rows(
+    [job] = records.rows(
         owner_engine,
         "SELECT attempt, last_error_code FROM aegis.jobs WHERE task_id = :id",
         id=task.task_id,
     )
     assert (job["attempt"], job["last_error_code"]) == (1, code)
-    assert "model.generated" not in _events(owner_engine, task.task_id)
-
-
-def _closed_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        closed: int = probe.getsockname()[1]
-    return closed
+    assert "model.generated" not in records.task_events(owner_engine, task.task_id)
 
 
 def _run_worker(
@@ -343,8 +285,8 @@ def _run_worker(
             service.submit(actor, Submission(kind, task_input, f"key-{uuid4().hex}"), "r").task
             for kind, task_input in tasks
         ]
-        _wait_for(
-            lambda: all(_task(app_engine, t.task_id).state in finished for t in submitted),
+        wait_for(
+            lambda: all(records.task(app_engine, t.task_id).state in finished for t in submitted),
             20,
             "every task to finish",
         )
@@ -352,19 +294,19 @@ def _run_worker(
         process.send_signal(signal.SIGTERM)
         stdout, stderr = process.communicate(timeout=20)
     assert process.returncode == 0
-    return [_task(app_engine, task.task_id) for task in submitted], stdout + stderr
+    return [records.task(app_engine, task.task_id) for task in submitted], stdout + stderr
 
 
 def test_the_worker_process_generates_with_the_configured_mock(
     app_engine: Engine,
     test_database: str,
     app_settings: DatabaseSettings,
-    operator: tuple[ActorContext, str],
+    operator: Caller,
 ) -> None:
     [task], output = _run_worker(
         app_engine,
         test_database,
-        operator[0],
+        operator.actor,
         [("generate", INPUT)],
         {S.SUCCEEDED, S.FAILED},
         AEGIS_MODEL_PROVIDER="mock",
@@ -379,17 +321,17 @@ def test_the_worker_process_generates_with_the_configured_mock(
 
 
 def test_an_unreachable_model_fails_generation_but_not_other_tasks(
-    app_engine: Engine, test_database: str, operator: tuple[ActorContext, str]
+    app_engine: Engine, test_database: str, operator: Caller
 ) -> None:
     (noop, generated), output = _run_worker(
         app_engine,
         test_database,
-        operator[0],
+        operator.actor,
         [("noop", {}), ("generate", INPUT)],
         {S.SUCCEEDED, S.FAILED},
         AEGIS_MODEL_PROVIDER="ollama",
         AEGIS_OLLAMA_MODEL="qwen3:0.6b",
-        AEGIS_OLLAMA_PORT=str(_closed_port()),
+        AEGIS_OLLAMA_PORT=str(unused_port()),
         AEGIS_WORKER_MAX_ATTEMPTS="1",
     )
 

@@ -15,8 +15,8 @@ from aegis.identity.admin import AdministrationError, IdentityAdministration, Is
 from aegis.identity.authentication import AuthenticationError, FailureReason, authenticate
 from aegis.identity.schema import SYSTEM_CLI_ID, credentials
 from aegis.identity.tokens import TOKEN_PREFIX
+from tests.fixtures.services import PEPPER
 
-PEPPER = Secret("identity-test-pepper-0123456789abcdef0123")
 HUMAN, SERVICE = IdentityKind.HUMAN, IdentityKind.SERVICE
 
 

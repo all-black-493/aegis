@@ -41,8 +41,8 @@ openshell-init: require-uv require-env ## Create AEGIS's OpenShell workspace and
 	$(UV) run --locked --env-file .env aegis openshell init
 
 openshell-image: ## Build the OpenShell probe image offline from the local ubuntu:24.04 and print its ID
-	docker build --pull=false --network none --quiet --tag aegis-openshell-probe:1 deploy/openshell/probe >/dev/null
-	@echo "AEGIS_OPENSHELL_IMAGE=$$(docker image inspect --format '{{.Id}}' aegis-openshell-probe:1)"
+	docker build --pull=false --network none --quiet --tag aegis-openshell-probe:2 deploy/openshell/probe >/dev/null
+	@echo "AEGIS_OPENSHELL_IMAGE=$$(docker image inspect --format '{{.Id}}' aegis-openshell-probe:2)"
 
 migrate: require-uv require-env ## Create or update database roles, then apply migrations
 	$(UV) run --locked --env-file .env aegis db bootstrap

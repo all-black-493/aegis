@@ -7,7 +7,8 @@ from types import MappingProxyType
 from typing import ClassVar, Protocol
 
 # Every sandbox AEGIS creates is named aegis-*, so cleanup can never reach anyone else's.
-SANDBOX_NAME = re.compile(r"aegis-[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?")
+# OpenShell 0.1.6 refuses sandbox names longer than 19 characters (ADR-0016).
+SANDBOX_NAME = re.compile(r"aegis-[a-z0-9](?:[a-z0-9-]{0,11}[a-z0-9])?")
 MANAGED_LABEL = "aegis.managed"
 MAX_EXEC_SECONDS = 300
 MAX_EXEC_ARGS = 64
@@ -53,7 +54,7 @@ class InvalidSandboxError(ValueError):
 
 def check_sandbox_name(name: str) -> str:
     if not SANDBOX_NAME.fullmatch(name):
-        raise InvalidSandboxError("sandbox names must match aegis-[a-z0-9-]")
+        raise InvalidSandboxError("sandbox names are aegis- and up to 13 of [a-z0-9-]")
     return name
 
 
@@ -105,6 +106,15 @@ class ExecResult:
 
 
 @dataclass(frozen=True)
+class EnforcementRecord:
+    # One of the runtime's own records of an enforcement decision, such as ("NET:OPEN",
+    # "DENIED", "/usr/bin/bash(0) -> 192.0.2.1:443 [reason:...]").
+    category: str
+    action: str
+    detail: str
+
+
+@dataclass(frozen=True)
 class RuntimeStatus:
     healthy: bool
     detail: str
@@ -152,6 +162,8 @@ class SandboxRuntime(Protocol):
     def delete(self, name: str) -> None: ...
 
     def managed(self) -> tuple[Sandbox, ...]: ...
+
+    def records(self, name: str) -> tuple[EnforcementRecord, ...]: ...
 
     def check_policy(self, candidate: Path, boundary: Path) -> ProverVerdict: ...
 

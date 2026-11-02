@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -6,21 +5,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import Engine, text
 
-from aegis.audit.recorder import AuditRecorder
-from aegis.authorization.access import ActorContext
-from aegis.authorization.catalog import IdentityKind, Role
-from aegis.config.logs import Redactor
-from aegis.config.settings import WorkerSettings, load_token_pepper
-from aegis.identity.admin import IdentityAdministration
+from aegis.authorization.catalog import Role
+from aegis.config.settings import WorkerSettings
 from aegis.identity.schema import SYSTEM_WORKER_ID
 from aegis.jobs.sandboxes import audit_sink, clean_orphaned_sandboxes
 from aegis.jobs.worker import Claim, Worker
 from aegis.runtime.gate import RELEASE, SandboxGate, load_policies
 from aegis.tasks.service import Submission, TaskService
 from tests.fixtures.fake_openshell import FakeOpenShell
+from tests.fixtures.services import RECORDER, make_caller
 
-PEPPER = load_token_pepper(os.environ)
-RECORDER = AuditRecorder(Redactor([PEPPER.reveal()]))
 IMAGE = "sha256:" + "c" * 64
 pytestmark = pytest.mark.usefixtures("isolated_jobs")
 
@@ -47,7 +41,7 @@ def _events(owner_engine: Engine, name: str) -> list[dict[str, Any]]:
 def test_an_admitted_sandbox_is_audited_from_creation_to_deletion(
     app_engine: Engine, owner_engine: Engine, fake: FakeOpenShell
 ) -> None:
-    name = f"aegis-audit-{uuid4().hex[:8]}"
+    name = f"aegis-audit-{uuid4().hex[:7]}"
     gate = SandboxGate(fake.runtime(), load_policies(), IMAGE, audit_sink(app_engine, RECORDER))
 
     with gate.open(name, {"aegis.purpose": "test"}):
@@ -72,16 +66,9 @@ def test_an_admitted_sandbox_is_audited_from_creation_to_deletion(
 
 
 def _running_job(app_engine: Engine, owner_engine: Engine) -> str:
-    name = f"sandbox-owner-{uuid4().hex[:8]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, [Role.OPERATOR])
-        issued = administration.issue_credential(name, PEPPER)
-    actor = ActorContext(
-        identity_id, IdentityKind.HUMAN, frozenset({Role.OPERATOR}), issued.credential_id
-    )
+    operator = make_caller(owner_engine, Role.OPERATOR, prefix="sandbox-owner")
     TaskService(app_engine, RECORDER).submit(
-        actor, Submission("noop", {}, f"key-{uuid4().hex}"), uuid4().hex
+        operator.actor, Submission("noop", {}, f"key-{uuid4().hex}"), uuid4().hex
     )
     claim = Worker(app_engine, RECORDER, WorkerSettings(lease_seconds=60)).claim()
     assert isinstance(claim, Claim)

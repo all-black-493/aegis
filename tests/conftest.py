@@ -1,6 +1,7 @@
 import os
 from collections.abc import Iterator
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import Engine, text
@@ -14,6 +15,9 @@ from aegis.config.settings import (
 from aegis.db.admin import bootstrap, recreate_test_database
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import upgrade
+
+if TYPE_CHECKING:
+    from tests.fixtures.services import Caller
 
 
 def _settings(role: DatabaseRole) -> DatabaseSettings:
@@ -80,3 +84,12 @@ def isolated_jobs(owner_engine: Engine) -> None:
                 " WHERE state IN ('pending', 'running')"
             )
         )
+
+
+@pytest.fixture
+def operator(owner_engine: Engine) -> "Caller":
+    # Imported here so unit tests, which run without .env, never read the pepper.
+    from aegis.authorization.catalog import Role
+    from tests.fixtures.services import make_caller
+
+    return make_caller(owner_engine, Role.OPERATOR, prefix="operator")

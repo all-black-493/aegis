@@ -1,13 +1,28 @@
-# The probe sandbox's policy (ADR-0017): the image's probe user (UID 2000), Landlock enforced or
-# no sandbox, system paths read-only, /tmp writable, and no network rules, so all egress is
-# denied.
+# The probe sandbox's policy (ADR-0017, ADR-0018): the image's probe user (UID 2000), Landlock
+# enforced or no sandbox, system paths and the probe's read-only directory readable, /tmp
+# writable. The only network rule lets bash send GET /probe/** to AEGIS's canary on the Docker
+# bridge, inspected and enforced; every other connection and request is denied.
 version: 1
 filesystem_policy:
   include_workdir: false
-  read_only: [/usr, /lib, /etc, /proc, /dev/urandom]
+  read_only: [/usr, /lib, /etc, /proc, /dev/urandom, /srv/aegis/readonly]
   read_write: [/tmp, /dev/null]
 landlock:
   compatibility: hard_requirement
 process:
   run_as_user: "2000"
   run_as_group: "2000"
+network_policies:
+  canary:
+    name: canary
+    endpoints:
+      - host: 172.17.0.1
+        port: 18901
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: /probe/**
+    binaries:
+      - path: /usr/bin/bash

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from aegis.config.settings import OllamaSettings, load_model_settings
-from aegis.doctor.checks import check_model_provider
+from aegis.doctor.integrations import check_model_provider
 from aegis.doctor.model import Requirement, Status
 from aegis.doctor.system import HostSystem
 from aegis.integrations.ollama.provider import VERIFIED_VERSION, OllamaProvider

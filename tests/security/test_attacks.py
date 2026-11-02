@@ -3,7 +3,6 @@ import logging
 import os
 import threading
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -17,20 +16,16 @@ from sqlalchemy.exc import DBAPIError
 from aegis.apps.api.app import create_app
 from aegis.apps.api.context import ApiContext
 from aegis.audit.events import Source
-from aegis.audit.recorder import AuditRecorder
-from aegis.authorization.access import ActorContext
 from aegis.authorization.catalog import Action, IdentityKind, ResourceType, Role
 from aegis.authorization.contract import Effect, SecurityDecision, Stage
-from aegis.config.logs import Redactor, configure_logging
+from aegis.config.logs import configure_logging
 from aegis.config.settings import (
     CommonSettings,
     DatabaseRole,
     DatabaseSettings,
     Environment,
     LogLevel,
-    WorkerSettings,
     load_database_settings,
-    load_token_pepper,
 )
 from aegis.identity.admin import IdentityAdministration
 from aegis.jobs.handlers import HandlerContext
@@ -42,16 +37,8 @@ from aegis.tasks.repository import NewTask, get_task, insert_task, record_decisi
 from aegis.tasks.service import Submission, TaskService
 from aegis.tasks.states import TaskKind, TaskState
 from aegis.tasks.transitions import PolicyRef, Transition, apply_transition
+from tests.fixtures.services import FAST_WORKER, PEPPER, RECORDER, Caller, make_caller
 
-PEPPER = load_token_pepper(os.environ)
-RECORDER = AuditRecorder(Redactor([PEPPER.reveal()]))
-FAST = WorkerSettings(
-    poll_seconds=0.05,
-    lease_seconds=10,
-    heartbeat_seconds=0.1,
-    shutdown_grace_seconds=0.3,
-    max_attempts=3,
-)
 POLICY = PolicyRef(CURRENT_POLICY.version, CURRENT_POLICY.digest)
 S = TaskState
 pytestmark = pytest.mark.usefixtures("isolated_jobs")
@@ -148,22 +135,6 @@ COLUMN_PRIVILEGES = {
 }
 
 
-@dataclass(frozen=True)
-class Caller:
-    name: str
-    actor: ActorContext
-    token: str
-
-    @property
-    def id(self) -> UUID:
-        return self.actor.identity_id
-
-    @property
-    def credential_id(self) -> UUID:
-        assert self.actor.credential_id is not None
-        return self.actor.credential_id
-
-
 class Spy:
     def __init__(self) -> None:
         self.calls = 0
@@ -182,16 +153,6 @@ def log_output() -> Iterator[io.StringIO]:
     yield stream
     root.handlers[:] = handlers
     root.setLevel(level)
-
-
-def _caller(owner_engine: Engine, *roles: Role) -> Caller:
-    name = f"attack-{uuid4().hex[:12]}"
-    with owner_engine.begin() as connection:
-        administration = IdentityAdministration(connection, AuditRecorder(Redactor()))
-        identity_id = administration.create_identity(name, IdentityKind.HUMAN, roles)
-        issued = administration.issue_credential(name, PEPPER)
-    actor = ActorContext(identity_id, IdentityKind.HUMAN, frozenset(roles), issued.credential_id)
-    return Caller(name, actor, issued.token.reveal())
 
 
 def _submit(
@@ -331,7 +292,7 @@ def test_the_application_role_holds_exactly_the_planned_privileges(owner_engine:
 def test_approval_cannot_be_bypassed_with_application_credentials(
     app_engine: Engine, owner_engine: Engine
 ) -> None:
-    caller = _caller(owner_engine, Role.OPERATOR)
+    caller = make_caller(owner_engine, Role.OPERATOR)
     task_id = _submit(app_engine, caller, "wait", {"seconds": 60})
     assert _state(app_engine, task_id) is S.AWAITING_APPROVAL
 
@@ -354,7 +315,7 @@ def test_approval_cannot_be_bypassed_with_application_credentials(
     with app_engine.begin() as connection:
         create_job(connection, task_id, max_attempts=3, correlation_id=None)
 
-    assert Worker(app_engine, RECORDER, FAST).claim() is None
+    assert Worker(app_engine, RECORDER, FAST_WORKER).claim() is None
     assert _state(app_engine, task_id) is S.AWAITING_APPROVAL
 
 
@@ -365,14 +326,16 @@ def test_approval_cannot_be_bypassed_with_application_credentials(
 def test_a_forged_task_still_faces_the_workers_own_checks(
     app_engine: Engine, owner_engine: Engine, change: str, reason: str
 ) -> None:
-    caller = _caller(owner_engine, Role.AUDITOR if change == "auditor" else Role.OPERATOR)
+    caller = make_caller(owner_engine, Role.AUDITOR if change == "auditor" else Role.OPERATOR)
     if change == "disable":
         with owner_engine.begin() as connection:
             IdentityAdministration(connection, RECORDER).disable_identity(caller.name)
     task_id = _forge_queued_task(app_engine, caller)
     spy = Spy()
 
-    outcome = Worker(app_engine, RECORDER, FAST, handlers=dict.fromkeys(TaskKind, spy)).claim()
+    outcome = Worker(
+        app_engine, RECORDER, FAST_WORKER, handlers=dict.fromkeys(TaskKind, spy)
+    ).claim()
 
     assert isinstance(outcome, Settled)
     assert (outcome.task.task_id, outcome.task.state) == (task_id, S.FAILED)
@@ -381,7 +344,7 @@ def test_a_forged_task_still_faces_the_workers_own_checks(
 
 
 def test_unregistered_kinds_cannot_be_stored(app_engine: Engine, owner_engine: Engine) -> None:
-    caller = _caller(owner_engine, Role.OPERATOR)
+    caller = make_caller(owner_engine, Role.OPERATOR)
 
     _refused(
         errors.CheckViolation,
@@ -396,7 +359,7 @@ def test_unregistered_kinds_cannot_be_stored(app_engine: Engine, owner_engine: E
 
 
 def test_client_supplied_request_ids_are_ignored(app_engine: Engine, owner_engine: Engine) -> None:
-    caller = _caller(owner_engine, Role.OPERATOR)
+    caller = make_caller(owner_engine, Role.OPERATOR)
     chosen = "attacker-chosen-0001"
     app = create_app(ApiContext(app_engine, PEPPER, RECORDER), Environment.TEST)
 
@@ -430,7 +393,10 @@ def test_no_credential_or_secret_is_stored_logged_or_returned(
     app_settings: DatabaseSettings,
     log_output: io.StringIO,
 ) -> None:
-    operator, auditor = _caller(owner_engine, Role.OPERATOR), _caller(owner_engine, Role.AUDITOR)
+    operator, auditor = (
+        make_caller(owner_engine, Role.OPERATOR),
+        make_caller(owner_engine, Role.AUDITOR),
+    )
     wrong = operator.token[:-1] + ("a" if operator.token[-1] != "a" else "b")
     app = create_app(ApiContext(app_engine, PEPPER, RECORDER), Environment.TEST)
     responses = []
@@ -446,7 +412,7 @@ def test_no_credential_or_secret_is_stored_logged_or_returned(
         ):
             headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": f"k-{uuid4().hex}"}
             responses.append(client.request(method, path, json=body, headers=headers))
-        Worker(app_engine, RECORDER, FAST).step(threading.Event())
+        Worker(app_engine, RECORDER, FAST_WORKER).step(threading.Event())
 
     owner = load_database_settings(os.environ, DatabaseRole.OWNER)
     admin = load_database_settings(os.environ, DatabaseRole.ADMIN)
