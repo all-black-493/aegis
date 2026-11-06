@@ -88,7 +88,7 @@ class FakeSystem:
     accepts_connections: bool = True
     model: ProviderStatus = field(default_factory=lambda: HEALTHY_MODEL)
     model_settings: list[ModelSettings] = field(default_factory=list)
-    runtime: RuntimeStatus = field(default_factory=lambda: RuntimeStatus(True, "ok", "0.1.6"))
+    runtime: RuntimeStatus = field(default_factory=lambda: RuntimeStatus(True, "ok", "0.1.7"))
     runtime_settings: list[RuntimeSettings] = field(default_factory=list)
     abi: int | None = 8
 
@@ -643,7 +643,7 @@ def test_a_configured_openshell_is_required_and_identified(system: FakeSystem, r
     check = result(diagnosis, "NVIDIA OpenShell")
     assert (check.requirement, check.status) == (Requirement.REQUIRED, Status.PASS)
     assert check.detail == (
-        "0.1.6 via gateway openshell, workspace aegis, Landlock ABI 8, probe image eeeeeeeeeeee"
+        "0.1.7 via gateway openshell, workspace aegis, Landlock ABI 8, probe image eeeeeeeeeeee"
     )
     [settings] = system.runtime_settings
     assert settings.runtime is SandboxRuntimeKind.OPENSHELL
@@ -653,7 +653,7 @@ def test_a_configured_openshell_is_required_and_identified(system: FakeSystem, r
 @pytest.mark.parametrize(
     ("detail", "hint"),
     [
-        ("cli_missing", "install the OpenShell 0.1.6 package"),
+        ("cli_missing", "install the OpenShell 0.1.7 package"),
         ("version_mismatch", "ADR-0016"),
         ("unreachable", "systemctl --user start openshell-gateway"),
         ("not_connected", "AEGIS_OPENSHELL_GATEWAY"),

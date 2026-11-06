@@ -75,7 +75,7 @@ make down
 | `make test-integration` | Runs the integration tests and the end-to-end test against the running PostgreSQL. Requires `make up`. |
 | `make test-security` | Runs the security suite (`tests/security`) against the running PostgreSQL. Requires `make up`. |
 | `make test-local-ai` | Runs the tests marked `local_ai` against the real local model. Requires `make up-local-ai`, `make model-pull` and `AEGIS_OLLAMA_MODEL`. Not part of CI. |
-| `make openshell-init` | Creates AEGIS's OpenShell workspace if it does not exist, then checks the runtime. Requires OpenShell 0.1.6. |
+| `make openshell-init` | Creates AEGIS's OpenShell workspace if it does not exist, then checks the runtime. Requires OpenShell 0.1.7. |
 | `make openshell-image` | Builds the probe image offline from the local `ubuntu:24.04` (pinned by digest, never pulled) and prints the `AEGIS_OPENSHELL_IMAGE=sha256:…` line to add to `.env`. |
 | `make test-openshell` | Runs the tests marked `openshell` against the real OpenShell gateway. Requires `make openshell-init` and the local `ubuntu:24.04` image; stop any running worker first. Not part of CI. |
 | `make lint` | Checks formatting and lint rules with Ruff. |
@@ -292,7 +292,7 @@ Notes:
 
 OpenShell is the runtime enforcement boundary for AEGIS workloads from Phase 3 on. So far AEGIS has the adapter, its sandbox policies, the probe image, the prover gate, the enforcement probes and the `enforcement_check` task kind that runs them (ADR-0016 to ADR-0019). No other task runs in a sandbox yet. CI never uses a real OpenShell.
 
-1. Install NVIDIA OpenShell **0.1.6** (AEGIS refuses every other version) and start its gateway, for example the Debian package's `openshell-gateway.service` user unit. `openshell status` must report `connected`.
+1. Install NVIDIA OpenShell **0.1.7** (AEGIS refuses every other version) and start its gateway, for example the Debian package's `openshell-gateway.service` user unit. `openshell status` must report `connected`.
 2. Run `make openshell-init`. It creates the `aegis` workspace on the gateway (`AEGIS_OPENSHELL_WORKSPACE`) if it is missing, and checks the CLI, prover and gateway versions and that no global policy is active.
 3. Run `make openshell-image`. It builds the probe image offline and prints a line such as `AEGIS_OPENSHELL_IMAGE=sha256:…`.
 4. Add `AEGIS_SANDBOX_RUNTIME=openshell` and that `AEGIS_OPENSHELL_IMAGE` line to `.env`, then run `make doctor` (the OpenShell check is now required) and `make test-openshell`.
@@ -314,7 +314,7 @@ Notes:
 - **Enforcement probes:** a run starts a canary on the default Docker bridge, `172.17.0.1`, ports 18901 and 18902. The ports must be free and `docker0` must have that address. It opens a gated sandbox and runs 16 fixed probes, one exec each: filesystem, process and network restrictions, plus positive controls. AEGIS judges each one from the command's result and what the canary received, and reports `verified`, `violated` or `inconclusive`. OpenShell's own denial records are reported beside AEGIS's evidence as corroboration (ADR-0018).
 - **Orphans:** a worker deletes AEGIS's sandboxes whose job is no longer running, at its first step and then once a minute. A worker running during `make test-openshell` would also delete the tests' sandboxes, so stop it first.
 - **No downloads:** the image is built from the local `ubuntu:24.04`, and the tests fail with a hint if it is missing.
-- **Upgrades:** a new OpenShell release must be re-verified before AEGIS accepts it (ADR-0016). Consider `sudo apt-mark hold openshell`.
+- **Upgrades:** a new OpenShell release must be re-verified before AEGIS accepts it (ADR-0016). Consider `sudo apt-mark hold openshell`. After installing a new package, run `systemctl --user daemon-reload` and restart the gateway. Its first start pulls that release's supervisor and sandbox images, so `openshell status` can report `Connection refused` for about 30 seconds.
 
 ## The doctor
 
@@ -323,7 +323,7 @@ Notes:
 - **Required:** Python 3.13, uv, Docker Engine, Docker Compose v2, `.env` configuration, disk space, memory, the PostgreSQL host port, the PostgreSQL service (Compose healthcheck plus a TCP connection from the host), and database migrations (the schema is at the latest revision).
 - **Optional:** whether the doctor runs inside the project `.venv`, whether `.env` grants any permission to other users or groups, and whether `.env` defines every variable in `.env.example`.
 - **Model provider:** optional and passing with the mock. Required when `AEGIS_MODEL_PROVIDER=ollama`: the local server must be reachable, the configured model present, local and matching any pinned digest. A server version other than the verified 0.34.2 is a warning.
-- **NVIDIA OpenShell:** optional and skipped while `AEGIS_SANDBOX_RUNTIME=none`, which refuses every sandbox operation. Required when it is `openshell`: Landlock ABI 3 or later, the CLI, prover and gateway at the verified 0.1.6, the gateway connected, AEGIS's workspace present, no global policy active, and the probe image configured and present.
+- **NVIDIA OpenShell:** optional and skipped while `AEGIS_SANDBOX_RUNTIME=none`, which refuses every sandbox operation. Required when it is `openshell`: Landlock ABI 3 or later, the CLI, prover and gateway at the verified 0.1.7, the gateway connected, AEGIS's workspace present, no global policy active, and the probe image configured and present.
 - **Not checked:** Langfuse/OpenTelemetry (Phase 8). It is listed separately and never reported as passing.
 
 The `.env` configuration check also validates `AEGIS_ENV` and `AEGIS_LOG_LEVEL`, requires every secret (the token pepper must be at least 32 characters), and rejects unknown `AEGIS_*` names.
@@ -395,7 +395,7 @@ Integration, end-to-end and security tests fail, never skip, when PostgreSQL or 
 | `make test-integration` | All integration and end-to-end tests pass. |
 | `make test-security` | All security tests pass. |
 | `make up-local-ai`, `make model-pull`, `make test-local-ai` (optional) | Both containers report `Healthy`; the pull prints `is ready: digest …`; all local AI tests pass. |
-| `make openshell-init`, `make openshell-image`, `make test-openshell` (optional) | `OpenShell 0.1.6 is ready`; the image ID is printed; all OpenShell tests pass. |
+| `make openshell-init`, `make openshell-image`, `make test-openshell` (optional) | `OpenShell 0.1.7 is ready`; the image ID is printed; all OpenShell tests pass. |
 | `make api`, then `curl http://127.0.0.1:8000/health/ready` | `{"status":"ready"}` |
 | `make down`, then `make up` | Previously stored data is still present. |
 

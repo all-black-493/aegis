@@ -28,7 +28,7 @@ _OBSERVED = {
 
 
 def sandbox_name(job: JobRef) -> str:
-    # 19 characters at most, as OpenShell 0.1.6 requires, and different for every attempt.
+    # 19 characters at most, as OpenShell requires, and different for every attempt.
     return f"aegis-{job.job_id.hex[:10]}-{job.attempt}"
 
 

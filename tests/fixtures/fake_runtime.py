@@ -21,7 +21,7 @@ PASS = ProverVerdict(ProverResult.WITHIN_BOUNDARY, frozenset(REQUIRED_PROVER_DOM
 @dataclass
 class FakeRuntime:
     # An in-process SandboxRuntime: every call is recorded, and each answer can be scripted.
-    status: RuntimeStatus = field(default_factory=lambda: RuntimeStatus(True, "ok", "0.1.6"))
+    status: RuntimeStatus = field(default_factory=lambda: RuntimeStatus(True, "ok", "0.1.7"))
     verdicts: list[ProverVerdict] = field(default_factory=lambda: [PASS, PASS])
     effective: str = "version: 1\n"
     release: str = RELEASE + "\n"

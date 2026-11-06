@@ -252,7 +252,7 @@ def test_only_named_and_labelled_sandboxes_are_managed(sandbox: Sandbox) -> None
 def _verdict(**change: Any) -> dict[str, Any]:
     verdict: dict[str, Any] = {
         "schema_version": 1,
-        "prover_version": "0.1.6",
+        "prover_version": "0.1.7",
         "result": "exceeds_boundary",
         "exit_code": 1,
         "coverage": {"domains": sorted(REQUIRED_PROVER_DOMAINS)},
@@ -274,7 +274,7 @@ def test_prover_reports_are_parsed_and_counterexamples_bounded() -> None:
     ("report", "exit_code", "error"),
     [
         (_verdict(schema_version=2), 1, RuntimeRefusedError),
-        (_verdict(prover_version="0.1.7"), 1, RuntimeRefusedError),
+        (_verdict(prover_version="0.1.8"), 1, RuntimeRefusedError),
         (_verdict(result="maybe"), 1, RuntimeProtocolError),
         (_verdict(), 0, RuntimeProtocolError),
         (_verdict(coverage={"domains": "filesystem"}), 1, RuntimeProtocolError),

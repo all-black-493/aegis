@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import ClassVar, Protocol
 
 # Every sandbox AEGIS creates is named aegis-*, so cleanup can never reach anyone else's.
-# OpenShell 0.1.6 refuses sandbox names longer than 19 characters (ADR-0016).
+# OpenShell refuses sandbox names longer than 19 characters (ADR-0016).
 SANDBOX_NAME = re.compile(r"aegis-[a-z0-9](?:[a-z0-9-]{0,11}[a-z0-9])?")
 MANAGED_LABEL = "aegis.managed"
 MAX_EXEC_SECONDS = 300

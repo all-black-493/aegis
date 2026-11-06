@@ -101,7 +101,7 @@ def test_pulling_a_model_fails_cleanly_before_connecting(
 
 class StubRuntime:
     workspace_exists = False
-    status = RuntimeStatus(True, "ok", "0.1.6")
+    status = RuntimeStatus(True, "ok", "0.1.7")
 
     def __init__(self, settings: OpenShellSettings) -> None:
         self.settings = settings
@@ -140,7 +140,7 @@ def test_openshell_init_creates_the_workspace_and_checks_the_runtime(
     assert main(["openshell", "init"]) == 0
 
     assert capsys.readouterr().out == (
-        f"workspace aegis {action} on gateway openshell; OpenShell 0.1.6 is ready\n"
+        f"workspace aegis {action} on gateway openshell; OpenShell 0.1.7 is ready\n"
     )
 
 
