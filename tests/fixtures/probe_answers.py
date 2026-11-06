@@ -1,6 +1,8 @@
 from aegis.runtime.contract import EnforcementRecord, ExecResult
+from aegis.runtime.gate import RELEASE, RELEASE_FILE
 from aegis.runtime.probes.catalog import PROBES
 from aegis.runtime.probes.model import NONCE, Probe, Role, Signature
+from tests.fixtures.fake_openshell import FakeOpenShell
 
 
 def fill(text: str, nonce: str) -> str:
@@ -37,6 +39,26 @@ def enforcing_records(nonce: str) -> list[EnforcementRecord]:
         for probe in PROBES
         if probe.record is not None
     ]
+
+
+def enforce_everything(fake: FakeOpenShell, nonce: str) -> FakeOpenShell:
+    # A sandbox that claims to enforce everything: each probe gets the answer its expectation
+    # describes, and the log holds a record for every network decision.
+    answers = {
+        " ".join(command): {
+            "exit": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+        for command, result in enforcing_answers(nonce).items()
+    }
+    answers[f"/usr/bin/cat {RELEASE_FILE}"] = {"stdout": RELEASE + "\n"}
+    logs = "\n".join(
+        f"[1.0] [sandbox] [OCSF ] [ocsf] {r.category} [MED] {r.action} {r.detail}"
+        for r in enforcing_records(nonce)
+    )
+    fake.update(exec=answers, logs=logs)
+    return fake
 
 
 def control_hits(nonce: str) -> set[tuple[int, str]]:

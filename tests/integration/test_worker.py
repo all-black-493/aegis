@@ -32,7 +32,8 @@ from aegis.identity.schema import SYSTEM_CLI_ID, SYSTEM_WORKER_ID
 from aegis.jobs import repository as jobs_repository
 from aegis.jobs.handlers import REGISTRY, Handler, HandlerContext, RetryableError
 from aegis.jobs.schema import jobs
-from aegis.jobs.worker import Claim, Settled, Worker
+from aegis.jobs.settlement import Claim
+from aegis.jobs.worker import Settled, Worker
 from aegis.policy.rules import MAX_JOB_ATTEMPTS, Outcome
 from aegis.policy.service import DecisionService
 from aegis.policy.version import CURRENT_POLICY

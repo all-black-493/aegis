@@ -6,18 +6,18 @@ AEGIS has implemented **Phase 0** (the local development foundation), **Phase 1*
 - an append-only audit store;
 - identities, role assignments and API credentials, administered through the `aegis` CLI;
 - an HTTP API on `127.0.0.1` with health checks, `GET /v1/me`, and routes to submit, view, list and cancel tasks;
-- a worker that runs the three built-in task kinds, `noop`, `wait` and `generate`, with leases, retries and recovery;
+- a worker that runs the four built-in task kinds, `noop`, `wait`, `generate` and `enforcement_check`, with leases, retries and recovery;
 - the authorization rules and the shared security-decision contract;
 - task, decision and history storage whose integrity rules the database enforces;
 - the versioned, fingerprinted policy and the decision service that saves every decision with its inputs;
 - the model provider contract, a deterministic, offline mock provider and an adapter for a local Ollama server, used by `generate` tasks;
-- the sandbox runtime contract, a version-pinned NVIDIA OpenShell adapter, AEGIS's sandbox policies and probe image, the prover gate that admits a sandbox only after its policy is proven within the boundary, and enforcement probes that verify the sandbox's filesystem, process and network restrictions independently (no task uses them yet);
+- the sandbox runtime contract, a version-pinned NVIDIA OpenShell adapter, AEGIS's sandbox policies and probe image, the prover gate that admits a sandbox only after its policy is proven within the boundary, and enforcement probes that verify the sandbox's filesystem, process and network restrictions independently, run by `enforcement_check` tasks;
 - an environment doctor;
 - the configuration and logging foundation;
 - the test and quality tooling, including a security suite and an end-to-end test;
-- the Phase 1 threat model, `docs/security/phase-1-threat-model.md`, and the Phase 2 threat model, `docs/security/phase-2-threat-model.md`.
+- the Phase 1 and Phase 2 threat models in `docs/security/`, and the draft Phase 3 threat model, `docs/security/phase-3-threat-model.md`.
 
-The worker runs only `noop`, `wait` and `generate`. The first two have no effects outside AEGIS; `generate` sends one prompt to the configured model (the mock by default, or a local Ollama on `127.0.0.1`) and stores the text it returns. There is no agent execution, no AEGIS workload runs under OpenShell yet, and AEGIS claims no filesystem, network or process isolation for its own workloads. Nothing executes untrusted workloads. The API and worker run as processes on the host; containers for them are planned, not built.
+The worker runs only `noop`, `wait`, `generate` and `enforcement_check`. The first two have no effects outside AEGIS; `generate` sends one prompt to the configured model (the mock by default, or a local Ollama on `127.0.0.1`) and stores the text it returns. `enforcement_check` runs AEGIS's own fixed probes in an OpenShell sandbox and reports whether every restriction held (see NVIDIA OpenShell). It is the only kind that uses a sandbox: the other three run in the worker process, and AEGIS claims no filesystem, network or process isolation for them. There is no agent execution, and nothing executes untrusted workloads. The API and worker run as processes on the host; containers for them are planned, not built.
 
 ## Supported platform
 
@@ -77,7 +77,7 @@ make down
 | `make test-local-ai` | Runs the tests marked `local_ai` against the real local model. Requires `make up-local-ai`, `make model-pull` and `AEGIS_OLLAMA_MODEL`. Not part of CI. |
 | `make openshell-init` | Creates AEGIS's OpenShell workspace if it does not exist, then checks the runtime. Requires OpenShell 0.1.6. |
 | `make openshell-image` | Builds the probe image offline from the local `ubuntu:24.04` (pinned by digest, never pulled) and prints the `AEGIS_OPENSHELL_IMAGE=sha256:…` line to add to `.env`. |
-| `make test-openshell` | Runs the tests marked `openshell` against the real OpenShell gateway. Requires `make openshell-init` and the local `ubuntu:24.04` image. Not part of CI. |
+| `make test-openshell` | Runs the tests marked `openshell` against the real OpenShell gateway. Requires `make openshell-init` and the local `ubuntu:24.04` image; stop any running worker first. Not part of CI. |
 | `make lint` | Checks formatting and lint rules with Ruff. |
 | `make format` | Sorts imports and formats the code with Ruff. |
 | `make typecheck` | Type-checks `src/` and `tests/` with mypy in strict mode. |
@@ -235,7 +235,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: first-task-0001" 
 
 Tasks:
 
-- The only kinds are `noop` (input `{}`), `wait` (input `{"seconds": n}`, 0 to 300) and `generate` (input `{"prompt": text, "max_output_tokens": n}`, 1 to 8,000 characters and 1 to 512 tokens; see The worker). A `wait` over 30 seconds is created in `awaiting_approval`; approvals arrive in Phase 6. Each identity may have at most 10 unfinished tasks.
+- The only kinds are `noop` (input `{}`), `wait` (input `{"seconds": n}`, 0 to 300), `generate` (input `{"prompt": text, "max_output_tokens": n}`, 1 to 8,000 characters and 1 to 512 tokens; see The worker) and `enforcement_check` (input `{}`; see NVIDIA OpenShell). A `wait` over 30 seconds is created in `awaiting_approval`; approvals arrive in Phase 6. Each identity may have at most 10 unfinished tasks.
 - `Idempotency-Key` is required: 8 to 128 characters from `A-Z a-z 0-9 _ . : -`, unique per identity. Repeating a request with the same key and body returns the original task with `Idempotent-Replayed: true`; the same key with a different body gets `409`. A refused submission does not use up its key.
 - A refused request gets `403` with code `denied` and the policy's reason codes. Tasks the caller may not see get the same `404` as tasks that do not exist.
 - Every submission, cancellation and refusal is saved as a security decision with its audit events, in the same transaction as the change. Reading another identity's tasks is audited as `task.read_privileged`.
@@ -252,7 +252,7 @@ See ADR-0004 and ADR-0011 for the design and its limitations.
 - **Cancellation.** A cancellation request reaches a running task at the next heartbeat. A heartbeat also stops the task if its submitter has been disabled.
 - **Recovery.** If a worker dies, any worker notices the expired lease and moves the task to `interrupted`, then back to `queued` after a backoff, or to `failed` once its attempts are used up.
 - **Shutdown.** Ctrl-C or SIGTERM stops the worker claiming. A running task gets `AEGIS_WORKER_SHUTDOWN_GRACE_SECONDS` to finish; otherwise it is released and queued again.
-- **Delivery.** Delivery is at least once: a task may run again after a crash. `noop` and `wait` have no outside effects, and `generate` only asks the model again.
+- **Delivery.** Delivery is at least once: a task may run again after a crash. `noop` and `wait` have no outside effects, `generate` only asks the model again, and `enforcement_check` runs its probes again in a new sandbox.
 - **Models.** The worker builds the provider named by `AEGIS_MODEL_PROVIDER` once, at startup, and checks it. If it is unavailable, the worker logs `model provider unavailable` and still runs other kinds. A `generate` task is retried while the model server cannot be reached and fails with the provider's code (for example `model_missing` or `digest_mismatch`) otherwise.
 - **`generate` results.** The result holds the `text`, why it stopped (`finish_reason`), the model's identity (`provider`, `model`, `model_digest`, `runtime_version`), token counts, the duration, and the fixed `temperature` 0 and `seed` 0. Each success adds a `model.generated` audit event with the identity and counts, never the prompt or the text. Neither appears in the logs.
 - **Prompts are stored.** A prompt is task input, kept with the task and its decision. Never put secrets in a prompt. The output is untrusted text: AEGIS stores it and never acts on it.
@@ -290,12 +290,21 @@ Notes:
 
 ## NVIDIA OpenShell (optional)
 
-OpenShell is the runtime enforcement boundary for AEGIS workloads from Phase 3 on. So far AEGIS has the adapter, its sandbox policies, the probe image, the prover gate and the enforcement probes (ADR-0016 to ADR-0018); no task runs in a sandbox yet. CI never uses a real OpenShell.
+OpenShell is the runtime enforcement boundary for AEGIS workloads from Phase 3 on. So far AEGIS has the adapter, its sandbox policies, the probe image, the prover gate, the enforcement probes and the `enforcement_check` task kind that runs them (ADR-0016 to ADR-0019). No other task runs in a sandbox yet. CI never uses a real OpenShell.
 
 1. Install NVIDIA OpenShell **0.1.6** (AEGIS refuses every other version) and start its gateway, for example the Debian package's `openshell-gateway.service` user unit. `openshell status` must report `connected`.
 2. Run `make openshell-init`. It creates the `aegis` workspace on the gateway (`AEGIS_OPENSHELL_WORKSPACE`) if it is missing, and checks the CLI, prover and gateway versions and that no global policy is active.
 3. Run `make openshell-image`. It builds the probe image offline and prints a line such as `AEGIS_OPENSHELL_IMAGE=sha256:…`.
 4. Add `AEGIS_SANDBOX_RUNTIME=openshell` and that `AEGIS_OPENSHELL_IMAGE` line to `.env`, then run `make doctor` (the OpenShell check is now required) and `make test-openshell`.
+5. Restart the worker and submit an `enforcement_check` task as an operator:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: first-check-0001" \
+  -H "Content-Type: application/json" -d '{"kind": "enforcement_check", "input": {}}' \
+  http://127.0.0.1:8000/v1/tasks
+```
+
+The task succeeds only if every check held. Its result is `{"verdict": "verified", "checks": {...}}`, and each check is audited as `enforcement.checked` with what was expected, what was observed and the outcome. A violated check fails the task with `enforcement_violation` and is logged at `ERROR`; anything unclear fails it with `enforcement_inconclusive`. An unreachable gateway or a busy canary is retried. A refused policy, image or OpenShell version fails the task with its code, and without a runtime it fails with `sandbox_unavailable` (ADR-0019).
 
 Notes:
 
@@ -303,7 +312,7 @@ Notes:
 - **Shared gateway:** on a local gateway without OIDC roles, the CLI identity is a Platform Admin. AEGIS restricts itself in code; the workspace is a scope, not an access boundary.
 - **Policies and the gate:** AEGIS's sandbox policies are in `deploy/openshell/` and fingerprinted. Before a sandbox is used, the prover must show its submitted and its effective policy within `boundary.yaml`, and the image must carry AEGIS's release marker. The sandbox is always deleted afterwards, and both events are audited (`sandbox.created`, `sandbox.deleted`).
 - **Enforcement probes:** a run starts a canary on the default Docker bridge, `172.17.0.1`, ports 18901 and 18902. The ports must be free and `docker0` must have that address. It opens a gated sandbox and runs 16 fixed probes, one exec each: filesystem, process and network restrictions, plus positive controls. AEGIS judges each one from the command's result and what the canary received, and reports `verified`, `violated` or `inconclusive`. OpenShell's own denial records are reported beside AEGIS's evidence as corroboration (ADR-0018).
-- **Orphans:** when a worker starts with `AEGIS_SANDBOX_RUNTIME=openshell`, it deletes AEGIS's sandboxes whose job is no longer running. A worker started during `make test-openshell` would also delete the tests' sandboxes.
+- **Orphans:** a worker deletes AEGIS's sandboxes whose job is no longer running, at its first step and then once a minute. A worker running during `make test-openshell` would also delete the tests' sandboxes, so stop it first.
 - **No downloads:** the image is built from the local `ubuntu:24.04`, and the tests fail with a hint if it is missing.
 - **Upgrades:** a new OpenShell release must be re-verified before AEGIS accepts it (ADR-0016). Consider `sudo apt-mark hold openshell`.
 
@@ -344,13 +353,14 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
   - verify the OpenShell adapter against a fake `openshell` and `openshell-prover`: health and its failure codes, the exact arguments of `create` and `exec`, no sandbox left behind when creation is refused or not ready, exec timeouts and bounded output, confirmed deletion, paging and filtering of AEGIS's sandboxes, and prover verdicts;
   - verify sandbox auditing against the test database: a gated sandbox's `sandbox.created` and `sandbox.deleted` events, and orphan cleanup that keeps a running job's sandbox and deletes only AEGIS's dead ones;
   - verify the worker: a task from submission to `succeeded` with its full audit chain, one claim among racing workers, stale workers refused by the service and the database, the attempt rule, the execution checks E1–E6 with the handler never running, cancellation, retries, recovery after `kill -9`, graceful shutdown, and the real `make worker` process;
-  - verify `generate` tasks with the mock: from the API to `succeeded` with `model.generated`, refused prompts never sent, cancellation stopping the model, retries while the model is unavailable, failure codes for refused models, and a worker process with an unreachable model still running other kinds.
+  - verify `generate` tasks with the mock: from the API to `succeeded` with `model.generated`, refused prompts never sent, cancellation stopping the model, retries while the model is unavailable, failure codes for refused models, and a worker process with an unreachable model still running other kinds;
+  - verify `enforcement_check` tasks against a fake `openshell` CLI: from the API to `succeeded` with the full audit chain (sandbox creation and deletion, one `enforcement.checked` per check), sandbox names and labels, retries of an unreachable gateway with a new sandbox per attempt, refusals that run no probe, cancellation that stops the probes and deletes the sandbox, and the worker's orphan sweep.
 
 - **The end-to-end tests** (`tests/e2e`) use only real processes: the `aegis` CLI creates identities and issues tokens, then the API and worker processes run tasks over HTTP on loopback. Neither process output may contain a credential.
   - **Phase 1 workflow** (run by `make test-integration`): a worker is killed with SIGKILL during a task, and a second worker finishes it. The audit chain is checked.
   - **Phase 2 workflow, once per provider:** a `generate` task runs from submission to `succeeded`. A submission that tries to choose the model is refused. The test checks the result's model identity, the history, the audit chain ending in `model.generated`, the decisions and policy version, and that neither the prompt nor the output appears in any process output. `make test-integration` runs it with the mock (as CI does), and `make test-local-ai` runs it with the local Ollama model.
 - **Local AI tests** (marked `local_ai`, run only by `make test-local-ai`) check the real local model: the verified runtime version, the doctor's model check, finishing on stop and length, repeatability at temperature 0 with a fixed seed, stopping, digest pinning, and the Phase 2 end-to-end workflow. `make test-integration` and CI deselect them, and they fail rather than skip when `AEGIS_OLLAMA_MODEL` is not set.
-- **The security suite** (`tests/security`, run by `make test-security`) holds the cross-cutting checks that the threat models (`docs/security/phase-1-threat-model.md` and `phase-2-threat-model.md`) rely on:
+- **The security suite** (`tests/security`, run by `make test-security`) holds the cross-cutting checks that the threat models (`docs/security/phase-1-threat-model.md`, `phase-2-threat-model.md` and `phase-3-threat-model.md`) rely on:
   - the exact privileges of `aegis_app`;
   - attacks made with stolen `aegis_app` credentials: approval bypass, forged tasks, unregistered kinds;
   - spoofed request IDs;
@@ -364,9 +374,10 @@ The doctor does not authenticate as the AEGIS roles. `make test-integration` and
     - an endless stream is cut to the output limit.
   - the enforcement probes, through the gate and the adapter against a fake `openshell` CLI: a sandbox that claims a refusal the canary saw through is a violation, a write that succeeded is a violation, OpenShell's records alone never verify a run, and a refused or failing run runs no probe or still deletes its sandbox and stops the canary;
   - the sandbox gate, against a fake `openshell` CLI: a submitted policy that is not proven (exceeding, unsupported, inconclusive, an error or partial coverage) creates nothing; an effective policy widened by a provider is proven as enforced, refused and deleted; a global policy stops the gate; an unrecognised image is deleted unused; orphan cleanup never touches other sandboxes;
+  - the `enforcement_check` boundary, against a fake `openshell` CLI and driven through the real worker: no runtime, a disabled runtime or an unavailable one never executes anything; a request the canary saw or a write that succeeded fails the task as `enforcement_violation` and is audited; runtime records alone never verify a check; unrecorded results never succeed; only `enforcement_check` tasks can create a sandbox; decisions are identical whichever runtime is configured; the registry matches the policy; auditors cannot start checks;
   - the sandbox runtime boundary, against a fake `openshell` CLI: no AEGIS secret or `OPENSHELL_*` override reaches the CLI, only allow-listed commands run in AEGIS's workspace, other sandboxes are never listed or deleted, an unverified or unreachable runtime creates nothing, and a disabled runtime starts no process.
-- **OpenShell tests** (marked `openshell`, run only by `make test-openshell`) check the real gateway: the verified version, a sandbox's lifecycle and user, exec timeouts, the effective policy against its boundary through the prover, and the prover's refusals. They also build the probe image with `make openshell-image`, open the gate with AEGIS's real policies (UID and GID 2000, audited creation and deletion), and show that the real prover stops `best_effort` Landlock, a root user or a widened path before any sandbox is created. They then run the enforcement probes, which must report `verified` with every network refusal corroborated by OpenShell, and run them under a deliberately widened policy, which must report the two gaps as `violated`. `make test-integration` and CI deselect them.
-- **Shared test code** (`tests/fixtures`): the shared callers, audit recorder and worker settings (`services`); record queries (`records`); the fake Ollama server; the fake `openshell` and `openshell-prover`; an in-process fake runtime; probe answers; test-only OpenShell policies; and the helpers that start processes and find free ports. `tests/conftest.py` provides the database fixtures and `operator`, and `tests/integration/conftest.py` the live OpenShell runtime and probe image.
+- **OpenShell tests** (marked `openshell`, run only by `make test-openshell`) check the real gateway: the verified version, a sandbox's lifecycle and user, exec timeouts, the effective policy against its boundary through the prover, and the prover's refusals. They also build the probe image with `make openshell-image`, open the gate with AEGIS's real policies (UID and GID 2000, audited creation and deletion), and show that the real prover stops `best_effort` Landlock, a root user or a widened path before any sandbox is created. They then run the enforcement probes, which must report `verified` with every network refusal corroborated by OpenShell, and run them under a deliberately widened policy, which must report the two gaps as `violated`. Finally an `enforcement_check` task runs through the worker and must succeed with every check held and corroborated. Stop any running worker first: its orphan sweep would delete the tests' sandboxes. `make test-integration` and CI deselect them.
+- **Shared test code** (`tests/fixtures`): the shared callers, audit recorder and worker settings (`services`); record queries (`records`); the fake Ollama server; the fake `openshell` and `openshell-prover`; an in-process fake runtime; probe answers, including a fake CLI scripted to enforce everything; the enforcement check and worker built for tests (`enforcement`); test-only OpenShell policies; and the helpers that start processes and find free ports. `tests/conftest.py` provides the database fixtures and `operator`, and `tests/integration/conftest.py` the live OpenShell runtime and probe image.
 
 Integration, end-to-end and security tests fail, never skip, when PostgreSQL or the settings are missing. They share the `<AEGIS_POSTGRES_DB>_test` database, recreated for each run; one security test also recreates `<AEGIS_POSTGRES_DB>_outdated_test`. Only databases whose names end in `_test` can be recreated; the development database is never touched by the tests.
 

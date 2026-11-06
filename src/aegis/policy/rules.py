@@ -23,7 +23,7 @@ MAX_PROMPT_CHARS = 8000
 MAX_GENERATE_TOKENS = 512
 GENERATE_TEMPERATURE = 0.0
 GENERATE_SEED = 0
-TASK_KINDS = frozenset({"noop", "wait", "generate"})
+TASK_KINDS = frozenset({"noop", "wait", "generate", "enforcement_check"})
 
 
 @dataclass(frozen=True)
@@ -110,7 +110,7 @@ def _within_limits(task: TaskFacts) -> bool:
 def _well_formed(task: TaskFacts) -> bool:
     if not isinstance(task.input, Mapping):
         return False
-    if task.kind == "noop":
+    if task.kind in ("noop", "enforcement_check"):
         return not task.input
     if task.kind == "generate":
         prompt, tokens = task.input.get("prompt"), task.input.get("max_output_tokens")

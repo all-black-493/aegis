@@ -161,6 +161,19 @@ def test_nothing_is_created_unless_the_runtime_and_the_submitted_policy_pass(
     assert events == []
 
 
+def test_a_runtime_that_may_recover_is_unavailable_not_refused() -> None:
+    runtime = FakeRuntime(status=RuntimeStatus(False, "unreachable", retryable=True))
+
+    with (
+        pytest.raises(RuntimeUnavailableError) as unavailable,
+        _gate(runtime, []).open("aegis-p", {}),
+    ):
+        pytest.fail("the block must not run")
+
+    assert unavailable.value.code == "unreachable"
+    assert "create" not in runtime.calls
+
+
 def test_no_image_means_no_sandbox(runtime: FakeRuntime) -> None:
     events: list[SandboxEvent] = []
 
@@ -249,7 +262,7 @@ def test_orphans_are_deleted_unless_in_use(runtime: FakeRuntime) -> None:
         runtime.live[name] = Sandbox(name, name, "Ready", None, labels)
     events: list[SandboxEvent] = []
 
-    deleted = clean_orphans(runtime, lambda s: s.labels.get("aegis.job") == "j-live", events.append)
+    deleted = clean_orphans(runtime, lambda: {"j-live"}, events.append)
 
     assert deleted == 2
     assert set(runtime.live) == {"aegis-live"}
@@ -257,3 +270,22 @@ def test_orphans_are_deleted_unless_in_use(runtime: FakeRuntime) -> None:
         ("aegis-dead", "orphaned", "j-dead"),
         ("aegis-bare", "orphaned", None),
     }
+
+
+def test_live_jobs_are_read_only_after_the_sandboxes_are_listed() -> None:
+    # A job claimed between the two reads must keep the sandbox it then creates.
+    class Listing(FakeRuntime):
+        def managed(self) -> tuple[Sandbox, ...]:
+            self.calls.append("managed")
+            return super().managed()
+
+    runtime = Listing()
+    labels = {"aegis.managed": "true", "aegis.job": "j-new"}
+    runtime.live["aegis-new"] = Sandbox("aegis-new", "id", "Ready", None, labels)
+
+    def live_jobs() -> set[str]:
+        assert runtime.calls == ["managed"]
+        return {"j-new"}
+
+    assert clean_orphans(runtime, live_jobs, lambda event: None) == 0
+    assert set(runtime.live) == {"aegis-new"}

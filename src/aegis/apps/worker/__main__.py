@@ -11,6 +11,7 @@ from aegis.audit.recorder import AuditRecorder
 from aegis.config.logs import Redactor, configure_logging
 from aegis.config.settings import (
     DatabaseRole,
+    SandboxRuntimeKind,
     SettingsError,
     forget_secrets,
     load_common_settings,
@@ -21,11 +22,11 @@ from aegis.config.settings import (
 )
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import schema_status
-from aegis.jobs.sandboxes import clean_orphaned_sandboxes
+from aegis.jobs.enforcement import EnforcementCheck
+from aegis.jobs.sandboxes import OrphanSweep
 from aegis.jobs.worker import Worker
 from aegis.model_providers.factory import build_provider
 from aegis.policy.rules import MAX_JOB_ATTEMPTS
-from aegis.runtime.contract import SandboxRuntimeError
 from aegis.runtime.factory import build_runtime
 
 logger = logging.getLogger("aegis.worker")
@@ -80,12 +81,20 @@ def main() -> int:
 
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
-        try:
-            clean_orphaned_sandboxes(engine, recorder, runtime)
-        except SandboxRuntimeError as error:
-            # No sandbox can be created while the runtime is unusable, so cleanup can wait.
-            logger.warning("sandbox cleanup skipped", extra={"detail": error.code})
-        Worker(engine, recorder, settings, provider=provider).run(stop)
+        # Without a configured runtime, enforcement_check tasks fail with sandbox_unavailable.
+        enforcement = (
+            EnforcementCheck(engine, recorder, runtime, sandboxes.openshell.image)
+            if sandboxes.runtime is SandboxRuntimeKind.OPENSHELL
+            else None
+        )
+        Worker(
+            engine,
+            recorder,
+            settings,
+            provider=provider,
+            enforcement=enforcement,
+            sweep=OrphanSweep(engine, recorder, runtime),
+        ).run(stop)
     finally:
         engine.dispose()
     return 0

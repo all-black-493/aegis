@@ -31,8 +31,8 @@ from aegis.policy.rules import (
 )
 from aegis.policy.version import CURRENT_POLICY, POLICY_VERSION, fingerprint
 
-PINNED_VERSION = "2026.11.02-1"
-PINNED_DIGEST = "0e0d05f76f58343017d99aa6a9103e65153dbaf3c4257bedb58ce0f17c305524"
+PINNED_VERSION = "2026.11.02-2"
+PINNED_DIGEST = "9052b517d68a4124095c78fe9c6a9b0a5720e83efc299f973e7dfe385e32a8bf"
 SUBMITTER = UUID("00000000-0000-4000-8000-0000000000aa")
 WORKER = UUID("00000000-0000-4000-8000-000000000001")
 
@@ -103,6 +103,9 @@ def test_the_fingerprint_covers_the_version_and_the_rule_sources() -> None:
     ("task", "verdict"),
     [
         (_task("noop", {}), (Effect.ALLOW, ("submission_allowed",))),
+        (_task("enforcement_check", {}), (Effect.ALLOW, ("submission_allowed",))),
+        (_task("enforcement_check", {"probes": ["x"]}), (Effect.DENY, ("input_invalid",))),
+        (TaskFacts("enforcement_check", None, 2), (Effect.DENY, ("input_invalid",))),
         (_task("wait", {"seconds": 0}), (Effect.ALLOW, ("submission_allowed",))),
         (_task("wait", {"seconds": 30}), (Effect.ALLOW, ("submission_allowed",))),
         (
@@ -292,6 +295,8 @@ def _corpus() -> list[DecisionInputs]:
         _task("wait", {"seconds": "x"}),
         _generate(),
         _generate(tokens=0),
+        _task("enforcement_check", {}),
+        _task("enforcement_check", {"image": "x"}),
         _task("shell", {}),
         TaskFacts("noop", None, MAX_INPUT_BYTES + 1),
     ]
@@ -320,13 +325,15 @@ def test_decisions_do_not_depend_on_the_environment(monkeypatch: pytest.MonkeyPa
         ["DEBUG", "INFO", "WARNING", "ERROR"],
         ["1024", "8000", "65535"],
         ["mock", "ollama"],
+        ["none", "openshell"],
     )
 
-    for environment, level, port, provider in settings:
+    for environment, level, port, provider, runtime in settings:
         monkeypatch.setenv("AEGIS_ENV", environment)
         monkeypatch.setenv("AEGIS_LOG_LEVEL", level)
         monkeypatch.setenv("AEGIS_API_PORT", port)
         monkeypatch.setenv("AEGIS_MODEL_PROVIDER", provider)
         monkeypatch.setenv("AEGIS_OLLAMA_MODEL", "qwen3:0.6b")
+        monkeypatch.setenv("AEGIS_SANDBOX_RUNTIME", runtime)
         assert [_verdict(inputs) for inputs in corpus] == expected
         assert fingerprint(POLICY_VERSION) == PINNED_DIGEST

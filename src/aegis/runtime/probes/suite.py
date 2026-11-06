@@ -28,9 +28,14 @@ def run_probes(
     nonce: str,
     probes: tuple[Probe, ...] = PROBES,
     sleep: Callable[[float], None] = time.sleep,
+    stop: Callable[[], bool] = lambda: False,
 ) -> ProbeReport:
     observations: dict[str, Observation | None] = {}
     for probe in probes:
+        if stop():
+            # A probe that never ran is unobserved, so a stopped run is never verified.
+            observations[probe.check_id] = None
+            continue
         # One exec per action, so each result is the kernel's and the runtime's, not a report
         # written by code inside the sandbox.
         result = runtime.exec(
@@ -42,7 +47,7 @@ def run_probes(
             else Observation(result.exit_code, result.stdout, result.stderr)
         )
     hits = canary.hits()
-    records = _records(runtime, name, probes, nonce, sleep)
+    records = () if stop() else _records(runtime, name, probes, nonce, sleep)
     return summarize(
         tuple(judge(probe, observations[probe.check_id], hits, records, nonce) for probe in probes)
     )
@@ -54,11 +59,13 @@ def verify_enforcement(
     name: str,
     labels: Mapping[str, str],
     canary: Callable[[], AbstractContextManager[CanaryLog]] | None = None,
+    stop: Callable[[], bool] = lambda: False,
+    nonce: str | None = None,
 ) -> ProbeReport:
-    nonce = secrets.token_hex(8)
+    nonce = nonce or secrets.token_hex(8)
     start = canary or (lambda: Canary(CANARY_HOST, (CANARY_PORT, CANARY_OTHER_PORT)))
     with start() as listening, gate.open(name, labels):
-        return run_probes(runtime, name, listening, nonce)
+        return run_probes(runtime, name, listening, nonce, stop=stop)
 
 
 def _records(
