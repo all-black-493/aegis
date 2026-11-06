@@ -75,6 +75,7 @@ def test_the_probe_image_provides_what_the_catalog_expects() -> None:
     assert f"> {UNLISTED_FILE}" in dockerfile
     assert f"printf '{RELEASE}\\n'" in dockerfile
     assert "chown -R 2000:2000 /srv/aegis" in dockerfile
+    assert "/srv/aegis/workspace" in dockerfile
 
 
 @pytest.mark.parametrize(

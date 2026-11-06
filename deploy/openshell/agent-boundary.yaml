@@ -1,0 +1,13 @@
+# The most an agent sandbox may be granted (ADR-0021). The prover checks every agent sandbox's
+# submitted and effective policy against this file. It allows no network at all, unlike
+# boundary.yaml, which also has to admit the probes' canary rule.
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only: [/usr, /lib, /etc, /proc, /dev/urandom, /srv/aegis/scenarios]
+  read_write: [/srv/aegis/workspace, /dev/null]
+landlock:
+  compatibility: hard_requirement
+process:
+  run_as_user: "2000"
+  run_as_group: "2000"

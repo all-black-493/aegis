@@ -96,6 +96,7 @@ ALLOWED_DETAILS: Mapping[AuditEventType, frozenset[str]] = MappingProxyType(
             {
                 "sandbox_id",
                 "runtime_version",
+                "profile",
                 "image",
                 "policy_version",
                 "policy_fingerprint",
