@@ -4,15 +4,22 @@ FROM ubuntu@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c53
 
 # A dedicated non-root identity with no supplementary groups; the image's own `ubuntu` user
 # belongs to sudo and adm. The probe directories belong to that identity, so when a probe is
-# refused there, Landlock refused it, not Unix permissions (ADR-0018).
+# refused there, Landlock refused it, not Unix permissions (ADR-0018). Agents work in the
+# workspace, which starts empty; the scenarios are the fixed fixtures copied into it (ADR-0021).
 RUN groupadd --gid 2000 probe \
     && useradd --uid 2000 --gid 2000 --no-create-home --home-dir /sandbox \
         --shell /usr/sbin/nologin probe \
-    && mkdir -p /srv/aegis/readonly /srv/aegis/unlisted \
+    && mkdir -p /srv/aegis/readonly /srv/aegis/unlisted /srv/aegis/workspace \
+        /srv/aegis/scenarios/fix-config-typo /srv/aegis/scenarios/create-greeting \
+        /srv/aegis/scenarios/copy-note \
     && printf 'aegis read-only marker\n' > /srv/aegis/readonly/marker \
     && printf 'aegis unlisted file\n' > /srv/aegis/unlisted/private \
+    && printf 'prot=8080\nhost=local\n' > /srv/aegis/scenarios/fix-config-typo/config.txt \
+    && printf 'nothing here\n' > /srv/aegis/scenarios/fix-config-typo/notes.txt \
+    && printf 'an empty workspace\n' > /srv/aegis/scenarios/create-greeting/readme.txt \
+    && printf 'alpha\n' > /srv/aegis/scenarios/copy-note/a.txt \
     && chown -R 2000:2000 /srv/aegis \
     && chmod 0700 /srv/aegis/unlisted \
-    && printf 'aegis-openshell-probe 2\n' > /etc/aegis-probe-release
+    && printf 'aegis-openshell-probe 3\n' > /etc/aegis-probe-release
 
 USER 2000:2000

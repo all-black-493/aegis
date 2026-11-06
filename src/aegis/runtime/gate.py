@@ -18,12 +18,18 @@ from aegis.runtime.contract import (
 )
 
 # Bump with any change to the files below; the fingerprint test fails until both change together.
-SANDBOX_POLICY_VERSION = "2026.11.02-2"
+SANDBOX_POLICY_VERSION = "2026.11.07-1"
 POLICY_DIR = Path(__file__).resolve().parents[3] / "deploy" / "openshell"
-POLICY_FILES = ("boundary.yaml", "probe.yaml", "probe/Dockerfile")
+POLICY_FILES = (
+    "boundary.yaml",
+    "probe.yaml",
+    "agent-boundary.yaml",
+    "agent.yaml",
+    "probe/Dockerfile",
+)
 # Written into the image by deploy/openshell/probe/Dockerfile.
 RELEASE_FILE = "/etc/aegis-probe-release"
-RELEASE = "aegis-openshell-probe 2"
+RELEASE = "aegis-openshell-probe 3"
 
 type DetailValue = str | int | None
 
@@ -49,18 +55,28 @@ type EventSink = Callable[[SandboxEvent], None]
 
 
 @dataclass(frozen=True)
+class SandboxProfile:
+    name: str
+    policy: str
+    boundary: str
+
+
+PROBE_PROFILE = SandboxProfile("probe", "probe.yaml", "boundary.yaml")
+AGENT_PROFILE = SandboxProfile("agent", "agent.yaml", "agent-boundary.yaml")
+
+
+@dataclass(frozen=True)
+class AdmittedSandbox:
+    # What the gate hands over once a sandbox is proven, for the length of its block.
+    sandbox: Sandbox
+    profile: SandboxProfile
+
+
+@dataclass(frozen=True)
 class SandboxPolicies:
     directory: Path
     version: str
     fingerprint: str
-
-    @property
-    def boundary(self) -> Path:
-        return self.directory / "boundary.yaml"
-
-    @property
-    def probe(self) -> Path:
-        return self.directory / "probe.yaml"
 
 
 def load_policies(directory: Path = POLICY_DIR) -> SandboxPolicies:
@@ -84,22 +100,25 @@ class SandboxGate:
         policies: SandboxPolicies,
         image: str | None,
         on_event: EventSink,
+        profile: SandboxProfile = PROBE_PROFILE,
     ) -> None:
         self._runtime = runtime
         self._policies = policies
         self._image = image
         self._on_event = on_event
+        self._profile = profile
 
     @contextmanager
-    def open(self, name: str, labels: Mapping[str, str]) -> Iterator[Sandbox]:
+    def open(self, name: str, labels: Mapping[str, str]) -> Iterator[AdmittedSandbox]:
         if self._image is None:
             raise RuntimeRefusedError("no probe image is configured", code="image_missing")
         status = self._runtime.check()
         if not status.healthy:
             error = RuntimeUnavailableError if status.retryable else RuntimeRefusedError
             raise error("the runtime is not usable", code=status.detail)
-        self._prove(self._policies.probe, "policy_refused")
-        sandbox = self._runtime.create(SandboxSpec(name, self._image, self._policies.probe, labels))
+        policy = self._policies.directory / self._profile.policy
+        self._prove(policy, "policy_refused")
+        sandbox = self._runtime.create(SandboxSpec(name, self._image, policy, labels))
         reason = "refused"
         try:
             verdict = self._prove_effective(name)
@@ -113,6 +132,7 @@ class SandboxGate:
                     {
                         "sandbox_id": sandbox.sandbox_id,
                         "runtime_version": status.version,
+                        "profile": self._profile.name,
                         "image": self._image,
                         "policy_version": self._policies.version,
                         "policy_fingerprint": self._policies.fingerprint,
@@ -122,13 +142,14 @@ class SandboxGate:
                 )
             )
             reason = "aborted"
-            yield sandbox
+            yield AdmittedSandbox(sandbox, self._profile)
             reason = "completed"
         finally:
             self._delete(name, reason)
 
     def _prove(self, candidate: Path, code: str) -> ProverVerdict:
-        verdict = self._runtime.check_policy(candidate, self._policies.boundary)
+        boundary = self._policies.directory / self._profile.boundary
+        verdict = self._runtime.check_policy(candidate, boundary)
         if not verdict.passed:
             raise RuntimeRefusedError(
                 f"the policy is not proven within the boundary: {verdict.result.value}", code=code

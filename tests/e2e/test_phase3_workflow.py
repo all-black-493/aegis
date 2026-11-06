@@ -131,6 +131,7 @@ def test_an_enforcement_check_runs_from_the_api_through_the_worker_under_openshe
     assert {key: created["details"][key] for key in created["details"] if key != "policy_hash"} == {
         "sandbox_id": created["details"]["sandbox_id"],
         "runtime_version": VERIFIED_VERSION,
+        "profile": "probe",
         "image": probe_image,
         "policy_version": policies.version,
         "policy_fingerprint": policies.fingerprint,

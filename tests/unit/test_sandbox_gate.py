@@ -14,6 +14,7 @@ from aegis.runtime.contract import (
 )
 from aegis.runtime.gate import (
     POLICY_DIR,
+    PROBE_PROFILE,
     SandboxEvent,
     SandboxEventKind,
     SandboxGate,
@@ -23,8 +24,8 @@ from aegis.runtime.gate import (
 from aegis.runtime.probes.catalog import CANARY_BINARY, CANARY_HOST, CANARY_PORT
 from tests.fixtures.fake_runtime import PASS, FakeRuntime
 
-PINNED_VERSION = "2026.11.02-2"
-PINNED_FINGERPRINT = "84ddf73966fd31261111b65ddea408152cf95caa1f6d4f1438d462ca6df3917e"
+PINNED_VERSION = "2026.11.07-1"
+PINNED_FINGERPRINT = "87dfa38cd21abc3e186b06c7e1c0609d374909b674a569dbb78e89bb84453466"
 IMAGE = "sha256:" + "a" * 64
 # The only network access a sandbox gets, built from the probe catalog's own constants.
 CANARY_RULE = f"""  canary:
@@ -95,8 +96,9 @@ def test_an_admitted_sandbox_is_proven_twice_recognised_audited_and_deleted(
 ) -> None:
     events: list[SandboxEvent] = []
 
-    with _gate(runtime, events).open("aegis-probe-1", {"aegis.task": "t1"}) as sandbox:
-        assert sandbox.name == "aegis-probe-1"
+    with _gate(runtime, events).open("aegis-probe-1", {"aegis.task": "t1"}) as admitted:
+        assert admitted.sandbox.name == "aegis-probe-1"
+        assert admitted.profile == PROBE_PROFILE
         assert [event.kind for event in events] == [SandboxEventKind.CREATED]
 
     assert runtime.calls == [
@@ -120,6 +122,7 @@ def test_an_admitted_sandbox_is_proven_twice_recognised_audited_and_deleted(
     assert dict(created.details) == {
         "sandbox_id": "id-1",
         "runtime_version": "0.1.7",
+        "profile": "probe",
         "image": IMAGE,
         "policy_version": PINNED_VERSION,
         "policy_fingerprint": PINNED_FINGERPRINT,
