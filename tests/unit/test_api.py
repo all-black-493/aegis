@@ -40,6 +40,7 @@ PRODUCTION_ROUTES = {
     ("GET", "/v1/tasks"),
     ("GET", "/v1/tasks/{task_id}"),
     ("POST", "/v1/tasks/{task_id}/cancel"),
+    ("GET", "/v1/tasks/{task_id}/steps"),
 }
 
 

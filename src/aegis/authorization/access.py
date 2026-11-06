@@ -79,6 +79,7 @@ _REQUIREMENTS: Mapping[Action, _Requirement] = MappingProxyType(
             True, for_owner=Permission.TASK_CANCEL, for_anyone=Permission.TASK_CANCEL_ANY
         ),
         Action.TASK_EXECUTE: _Requirement(True, for_anyone=Permission.TASK_EXECUTE),
+        Action.TOOL_INVOKE: _Requirement(True, for_anyone=Permission.TOOL_INVOKE),
     }
 )
 

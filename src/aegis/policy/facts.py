@@ -29,6 +29,33 @@ class ExecutionFacts:
 
 
 @dataclass(frozen=True)
+class ToolRequest:
+    # What the agent layer knows about one proposed call. It carries a digest and a size, never
+    # the arguments: decisions are saved, and a tool's content stays in the run records.
+    name: str
+    registered: bool
+    version: str | None
+    risk: str | None
+    network: str | None
+    approval: str | None
+    boundary: str | None
+    required_capabilities: frozenset[str]
+    permitted_roles: frozenset[str]
+    granted_capabilities: frozenset[str]
+    run_active: bool
+    arguments_sha256: str
+    arguments_bytes: int
+
+
+@dataclass(frozen=True)
+class ToolFacts:
+    request: ToolRequest
+    initiator_active: bool
+    initiator_roles: frozenset[Role]
+    submitting_credential_revoked: bool
+
+
+@dataclass(frozen=True)
 class DecisionInputs:
     action: Action
     actor_id: UUID
@@ -38,6 +65,7 @@ class DecisionInputs:
     resource_owner_id: UUID | None
     submission: SubmissionFacts | None = None
     execution: ExecutionFacts | None = None
+    tool: ToolFacts | None = None
 
 
 def to_document(inputs: DecisionInputs) -> dict[str, Any]:
@@ -66,6 +94,7 @@ def to_document(inputs: DecisionInputs) -> dict[str, Any]:
             "initiator_roles": sorted(role.value for role in inputs.execution.initiator_roles),
             "submitting_credential_revoked": inputs.execution.submitting_credential_revoked,
         },
+        "tool": None if inputs.tool is None else _tool_document(inputs.tool),
     }
 
 
@@ -94,6 +123,55 @@ def from_document(document: Mapping[str, Any]) -> DecisionInputs:
             initiator_roles=frozenset(Role(role) for role in execution["initiator_roles"]),
             submitting_credential_revoked=execution["submitting_credential_revoked"],
         ),
+        tool=None if document.get("tool") is None else _tool_facts(document["tool"]),
+    )
+
+
+def _tool_document(tool: ToolFacts) -> dict[str, Any]:
+    request = tool.request
+    return {
+        "request": {
+            "name": request.name,
+            "registered": request.registered,
+            "version": request.version,
+            "risk": request.risk,
+            "network": request.network,
+            "approval": request.approval,
+            "boundary": request.boundary,
+            "required_capabilities": sorted(request.required_capabilities),
+            "permitted_roles": sorted(request.permitted_roles),
+            "granted_capabilities": sorted(request.granted_capabilities),
+            "run_active": request.run_active,
+            "arguments_sha256": request.arguments_sha256,
+            "arguments_bytes": request.arguments_bytes,
+        },
+        "initiator_active": tool.initiator_active,
+        "initiator_roles": sorted(role.value for role in tool.initiator_roles),
+        "submitting_credential_revoked": tool.submitting_credential_revoked,
+    }
+
+
+def _tool_facts(document: Mapping[str, Any]) -> ToolFacts:
+    request = document["request"]
+    return ToolFacts(
+        request=ToolRequest(
+            name=request["name"],
+            registered=request["registered"],
+            version=request["version"],
+            risk=request["risk"],
+            network=request["network"],
+            approval=request["approval"],
+            boundary=request["boundary"],
+            required_capabilities=frozenset(request["required_capabilities"]),
+            permitted_roles=frozenset(request["permitted_roles"]),
+            granted_capabilities=frozenset(request["granted_capabilities"]),
+            run_active=request["run_active"],
+            arguments_sha256=request["arguments_sha256"],
+            arguments_bytes=request["arguments_bytes"],
+        ),
+        initiator_active=document["initiator_active"],
+        initiator_roles=frozenset(Role(role) for role in document["initiator_roles"]),
+        submitting_credential_revoked=document["submitting_credential_revoked"],
     )
 
 

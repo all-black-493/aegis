@@ -74,6 +74,9 @@ The approved Phase 1 plan defines the guarantees below. They are reproduced verb
 | `sandbox.created` | `sandbox_id`, `runtime_version`, `image`, `policy_version`, `policy_fingerprint`, `policy_hash`, `prover_result` | Phase 3, Increment 2 (the sandbox gate, ADR-0017) |
 | `sandbox.deleted` | `task`, `job` (orphans only) | Phase 3, Increment 2 (the sandbox gate and orphan cleanup, ADR-0017) |
 | `enforcement.checked` | `attempt`, `check`, `kind`, `expected`, `observed`, `exit_code`, `corroborated` | Phase 3, Increment 4 (the `enforcement_check` task kind, ADR-0019) |
+| `agent.started` | `attempt`, `scenario`, `capabilities`, `sandbox` | Phase 4, Increment 3 (execution records, ADR-0022) |
+| `tool.invoked` | `attempt`, `step`, `tool`, `version`, `exit_code`, `content_sha256`, `content_bytes` | Phase 4, Increment 3 (execution records, ADR-0022) |
+| `agent.finished` | `attempt`, `steps`, `content_sha256`, `content_bytes` | Phase 4, Increment 3 (execution records, ADR-0022) |
 
 Since Phase 3, Increment 4, the `sandbox.*` events of an `enforcement_check` task carry its task and job IDs. Orphan events do not, because their labels come from the runtime.
 

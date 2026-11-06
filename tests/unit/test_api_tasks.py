@@ -264,6 +264,7 @@ def test_the_development_openapi_document_describes_task_submission() -> None:
         "/v1/tasks",
         "/v1/tasks/{task_id}",
         "/v1/tasks/{task_id}/cancel",
+        "/v1/tasks/{task_id}/steps",
     }
 
 

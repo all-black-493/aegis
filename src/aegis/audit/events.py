@@ -38,6 +38,9 @@ class AuditEventType(StrEnum):
     SANDBOX_CREATED = "sandbox.created"
     SANDBOX_DELETED = "sandbox.deleted"
     ENFORCEMENT_CHECKED = "enforcement.checked"
+    AGENT_STARTED = "agent.started"
+    AGENT_FINISHED = "agent.finished"
+    TOOL_INVOKED = "tool.invoked"
 
 
 class Source(StrEnum):
@@ -107,6 +110,13 @@ ALLOWED_DETAILS: Mapping[AuditEventType, frozenset[str]] = MappingProxyType(
         AuditEventType.SANDBOX_DELETED: frozenset({"task", "job"}),
         AuditEventType.ENFORCEMENT_CHECKED: frozenset(
             {"attempt", "check", "kind", "expected", "observed", "exit_code", "corroborated"}
+        ),
+        AuditEventType.AGENT_STARTED: frozenset({"attempt", "scenario", "capabilities", "sandbox"}),
+        AuditEventType.AGENT_FINISHED: frozenset(
+            {"attempt", "steps", "content_sha256", "content_bytes"}
+        ),
+        AuditEventType.TOOL_INVOKED: frozenset(
+            {"attempt", "step", "tool", "version", "exit_code", "content_sha256", "content_bytes"}
         ),
     }
 )

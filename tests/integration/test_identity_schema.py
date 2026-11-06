@@ -8,8 +8,9 @@ from psycopg.rows import TupleRow
 
 from aegis.config.settings import DatabaseSettings
 from aegis.db.engine import connect
-from aegis.identity.schema import SYSTEM_CLI_ID, SYSTEM_WORKER_ID
+from aegis.identity.schema import SYSTEM_AGENT_ID, SYSTEM_CLI_ID, SYSTEM_WORKER_ID
 
+AGENT = str(SYSTEM_AGENT_ID)
 CLI = str(SYSTEM_CLI_ID)
 WORKER = str(SYSTEM_WORKER_ID)
 HASH = "decode(repeat('ab', 32), 'hex')"
@@ -63,6 +64,7 @@ def test_system_identities_are_seeded_with_fixed_ids(owner: psycopg.Connection[T
     ).fetchall()
 
     assert rows == [
+        (AGENT, "system", "system:agent", "active", ["agent"]),
         (CLI, "system", "system:cli", "active", []),
         (WORKER, "system", "system:worker", "active", ["worker"]),
     ]

@@ -45,6 +45,8 @@ pytestmark = pytest.mark.usefixtures("isolated_jobs")
 
 # The Phase 1 plan, §3.4: what the API and worker's database role may do, and nothing more.
 TABLE_PRIVILEGES = {
+    "agent_runs": {"SELECT"},
+    "agent_steps": {"SELECT"},
     "alembic_version": {"SELECT"},
     "audit_events": set(),
     "credentials": {"SELECT"},
@@ -57,6 +59,33 @@ TABLE_PRIVILEGES = {
     "tasks": {"SELECT"},
 }
 COLUMN_PRIVILEGES = {
+    ("agent_runs", "INSERT"): {
+        "id",
+        "task_id",
+        "job_id",
+        "job_attempt",
+        "agent_id",
+        "scenario",
+        "capabilities",
+        "sandbox",
+        "policy_version",
+        "policy_digest",
+    },
+    ("agent_steps", "INSERT"): {
+        "run_id",
+        "sequence",
+        "kind",
+        "code",
+        "tool_name",
+        "tool_version",
+        "decision_id",
+        "content",
+        "content_sha256",
+        "content_bytes",
+        "prompt_tokens",
+        "output_tokens",
+        "duration_ms",
+    },
     ("audit_events", "INSERT"): {
         "event_id",
         "event_type",

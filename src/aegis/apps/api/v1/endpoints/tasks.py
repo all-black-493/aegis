@@ -4,10 +4,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from aegis.apps.api.context import request_id
+from aegis.agents.records import read_runs, read_steps
+from aegis.apps.api.context import api_context, request_id
 from aegis.apps.api.deps import Actor, idempotency_key, submission_body, task_service
 from aegis.apps.api.pagination import DEFAULT_PAGE_SIZE, decode_cursor, encode_cursor
 from aegis.apps.api.problems import ApiError, problem
+from aegis.apps.api.schemas.agents import StepPage, run_view, step_view
 from aegis.apps.api.schemas.tasks import (
     SUBMIT_OPENAPI,
     TaskPage,
@@ -96,6 +98,30 @@ def cancel_task(request: Request, actor: Actor, task_id: UUID) -> Response:
     except TaskFinishedError:
         return problem(409, "task_finished")
     return _task(cancelled.task, 202 if cancelled.pending else 200)
+
+
+@router.get("/{task_id}/steps", response_model=StepPage)
+def task_steps(
+    request: Request,
+    actor: Actor,
+    task_id: UUID,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    after: Annotated[int, Query(ge=0)] = 0,
+) -> Response:
+    # Whoever may read the task may read its steps, and a privileged read is audited as one.
+    try:
+        task_service(request).get(actor, task_id, request_id(request))
+    except (TaskNotFoundError, AccessDeniedError):
+        return problem(404)
+    with api_context(request).engine.connect() as connection:
+        runs = read_runs(connection, task_id)
+        steps = read_steps(connection, task_id, after=after, limit=limit)
+    body = StepPage(
+        runs=[run_view(run) for run in runs],
+        steps=[step_view(step) for step in steps],
+        next_after=steps[-1].step_id if len(steps) == limit else None,
+    )
+    return JSONResponse(body.model_dump(mode="json"))
 
 
 def _task(task: TaskRecord, status: int, headers: dict[str, str] | None = None) -> Response:

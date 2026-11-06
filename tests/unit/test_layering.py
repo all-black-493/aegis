@@ -13,6 +13,7 @@ AUDIT_INDEPENDENT_OF = (
     "aegis.policy",
     "aegis.tasks",
     "aegis.jobs",
+    "aegis.agents",
 )
 AUTHORIZATION_INDEPENDENT_OF = (
     "aegis.db",
@@ -35,6 +36,7 @@ MODEL_PACKAGES_INDEPENDENT_OF = (
     "aegis.policy",
     "aegis.tasks",
     "aegis.jobs",
+    "aegis.agents",
     "sqlalchemy",
     "psycopg",
     "alembic",
@@ -106,6 +108,10 @@ RULES = (
     ),
     *(
         Rule(package, TOOL_REGISTRY, "decisions cannot depend on how a tool runs")
+        for package in SECURITY_PACKAGES
+    ),
+    *(
+        Rule(package, "aegis.agents", "decisions cannot depend on the agent that asks for them")
         for package in SECURITY_PACKAGES
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
