@@ -481,6 +481,8 @@ Do not create empty packages merely to match this tree.
 
 All application code lives in the single installable `aegis` distribution under `src/aegis/`. Components sit directly under `src/aegis/`; there is no `packages/` grouping level. Entry points live in `src/aegis/apps/`. Import rules between components are recorded in ADR-0002 and enforced by `tests/unit/test_layering.py`, which also forbids importing the evaluation frameworks.
 
+The API follows FastAPI's bigger-applications layout: `app.py` ties the application together, `deps.py` holds shared request dependencies, `schemas/` holds request and response models, and each versioned area has a router module under `v1/endpoints/`. Routers stay thin and call into the domain packages. Those packages are shared with the worker and the CLI, so only `aegis.apps.api` may import FastAPI or Starlette, which `tests/unit/test_layering.py` enforces (ADR-0004).
+
 The only other Python project is the evaluation harness under `benchmarks/`: a separate, non-packaged uv project with its own lockfile for the evaluation frameworks (ADR-0012). It arrives in Phase 4.
 
 ```text
@@ -489,6 +491,13 @@ AEGIS/
 │   └── aegis/
 │       ├── apps/
 │       │   ├── api/
+│       │   │   ├── app.py
+│       │   │   ├── deps.py
+│       │   │   ├── health.py
+│       │   │   ├── schemas/
+│       │   │   └── v1/
+│       │   │       ├── router.py
+│       │   │       └── endpoints/
 │       │   ├── worker/
 │       │   ├── cli/
 │       │   └── dashboard/
