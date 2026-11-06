@@ -19,6 +19,8 @@ AEGIS policies, the prover gate and the enforcement probes follow in later incre
 
 ## Version verified
 
+AEGIS was first verified on 0.1.6, described in this section and the next. It moved to 0.1.7 in Phase 4; see [Re-verified on 0.1.7](#re-verified-on-openshell-017-2026-11-07).
+
 | Item | Finding |
 |---|---|
 | Package | NVIDIA's Debian package `openshell 0.1.6-1` (Apache-2.0), released 2026-10-27. It installs `/usr/bin/openshell`, `/usr/bin/openshell-gateway` and `/usr/bin/openshell-prover`. The documentation is the `v0.1.6` tag, commit `ac7f615` |
@@ -47,15 +49,30 @@ AEGIS policies, the prover gate and the enforcement probes follow in later incre
 | Prover | `openshell-prover check C --boundary B --output json` reports `schema_version` 1, `prover_version`, `coverage.domains` (`filesystem`, `network_l4`, `network_rest`, `process`, `landlock`), `result`, `exit_code`, `counterexample`, `reason_code` and `reason`. The effective policy against its boundary gave `within_boundary` (0). Landlock widened to `best_effort` gave `exceeds_boundary` (1, counterexample `landlock`), and so did an extra port. A sub-path of a boundary path, and a different UID, gave `unsupported` (3) |
 | Global policy | None is active. `policy get --global` exits 1 with `no global policy revision found` |
 
+## Re-verified on OpenShell 0.1.7 (2026-11-07)
+
+Package `openshell 0.1.7-1` (released 2026-11-03), installed from the release's `.deb` after checking its SHA-256, on the same host (Linux 7.0, Landlock ABI 8). The documentation is the `v0.1.7` tag, commit `5d25211`. The move took no adapter change beyond the pin.
+
+| Area | Result on 0.1.7 |
+|---|---|
+| Unchanged | Run directly against the behaviours above, with the same results: `status --output json` (including exit 0 with `not_configured` for an unknown gateway), the `create`, `get` and `list` fields AEGIS reads, `phase` `Ready` and admission `accepted`, the 19-character name limit, the wrapped `│` error text for `not found` and `no global policy revision found`, exec exit status and 124 on timeout, a missing sandbox exiting 1, the delete text and idempotent second delete, the baseline `/var/log` path as policy revision 2, and PID 1 as the `openshell-sandbox` supervisor with `NoNewPrivs: 1`, `CapEff: 0` and `Seccomp: 2` with 6 filters |
+| Prover | Still `schema_version` 1 with the same five coverage domains. The effective policy gave `within_boundary`, and a policy on another port gave `exceeds_boundary` with exit 1 and a `counterexample` |
+| OCSF 1.8.0 | The release's breaking change is that OpenShell now emits only OCSF 1.8.0 records. AEGIS doesn't consume OCSF JSON or OTLP. It reads the shorthand lines from `openshell logs`, which keep their format, for example `[ocsf] NET:OPEN [MED] DENIED /usr/bin/bash(0) -> 192.0.2.1:443 [reason:transparent_tcp_policy_denied]`. `parse_records` needed no change, and every network probe was still corroborated |
+| Additions AEGIS doesn't read | `status --output json` also reports `authentication`, and sandbox JSON carries more fields. The name-limit error reads `name exceeds maximum length (20 > 19)` |
+| Upgrading | systemd reports that the unit file changed, so `systemctl --user daemon-reload` is needed. The first start pulled `ghcr.io/nvidia/openshell/{supervisor,sandbox}:0.1.7` and bound its port about 29 seconds after starting, and a CLI call in that window fails with `Connection refused`. The next restart took about a second |
+| Live suite | `make test-openshell` passes on 0.1.7, including the probes under a deliberately widened policy and `enforcement_check` through real API and worker processes |
+
+0.1.7 also applies policy DNS destination checks to address selection on direct connections, and updates vulnerable Rust dependencies. Those are why AEGIS moved before model-driven execution (Phase 4, decision U1).
+
 ## Decisions
 
 | Area | Decision | Rationale |
 |---|---|---|
 | Contract | `aegis.runtime.contract` defines `SandboxSpec`, `Sandbox`, `ExecResult`, `RuntimeStatus` and `ProverVerdict`. Its errors are `RuntimeUnavailableError` (retryable), `RuntimeRefusedError` and `RuntimeProtocolError`, each with a short `code`. The `SandboxRuntime` protocol has `check`, `create`, `get`, `exec`, `effective_policy`, `delete`, `managed` and `check_policy`. Nothing in AEGIS's domain imports OpenShell (layering rules) | The worker will depend on the contract, as it does for model providers (ADR-0013). |
-| Adapter | `aegis.integrations.openshell` drives the CLI and the prover as subprocesses. The binaries are fixed at `/usr/bin/openshell` and `/usr/bin/openshell-prover`, and no setting can name another. JSON output is used wherever 0.1.6 has it. There is no new dependency (decision U2) | The CLI is the documented interface. The Python SDK would add gRPC dependencies. |
+| Adapter | `aegis.integrations.openshell` drives the CLI and the prover as subprocesses. The binaries are fixed at `/usr/bin/openshell` and `/usr/bin/openshell-prover`, and no setting can name another. JSON output is used wherever the CLI has it. There is no new dependency (decision U2) | The CLI is the documented interface. The Python SDK would add gRPC dependencies. |
 | Allow-list | Only `status`, `workspace get/create`, `sandbox create/get/list/exec/delete`, `policy get` and `logs` (added for the enforcement records of ADR-0018), plus `--version` and `openshell-prover check`. Every command carries `--gateway`, `--workspace` and `--color never`. Policy changes on live sandboxes, global policies, providers, services, forwards, templates and settings are not reachable | The adapter can only do what Phase 3 needs. |
 | Environment | The CLI receives only `PATH=/usr/bin:/bin`, `LANG`, `NO_COLOR`, `HOME` and `XDG_CONFIG_HOME` when it is absolute. No AEGIS variable and no `OPENSHELL_*` override (such as `OPENSHELL_GATEWAY_INSECURE`) reaches it. Each call runs in its own session, with stdout and stderr capped and a timeout that kills the process group | No secret leaves AEGIS, nothing in the environment can weaken TLS, and a misbehaving CLI cannot exhaust the worker. |
-| Version pin | The CLI, prover and gateway must report exactly 0.1.6, checked before every `create` and every prover run. Anything else is refused with `version_mismatch`. The status must be `connected`, never inferred from the exit code (decision U8) | An upgrade between tasks is noticed before it runs anything. |
+| Version pin | The CLI, prover and gateway must report exactly `VERIFIED_VERSION`, now 0.1.7, checked before every `create` and every prover run. Anything else is refused with `version_mismatch`. The status must be `connected`, never inferred from the exit code (decision U8) | An upgrade between tasks is noticed before it runs anything. |
 | Isolation on a shared gateway | AEGIS uses its own workspace (`AEGIS_OPENSHELL_WORKSPACE`, default `aegis`; `default` is refused), created only by `aegis openshell init` (`make openshell-init`). Sandboxes are named `aegis-[a-z0-9-]` and labelled `aegis.managed=true`. `managed()` filters by both, on top of the gateway's selector. `delete()` refuses any other name. A global policy makes `check()` fail (decision U1) | AEGIS can only list and delete its own sandboxes. A workspace is a scope, not an access boundary, because the CLI identity is a Platform Admin. |
 | Creating | `create()` adds `--detach --no-tty --no-auto-providers` and runs `/usr/bin/sleep infinity` as the main process. It requires `phase` `Ready` and admission `accepted`; otherwise it deletes the sandbox and raises `sandbox_rejected` or `sandbox_not_ready` | A sandbox is either fully admitted or gone. |
 | Exec | Arguments are an absolute program plus at most 64 arguments of up to 4 KiB, with no NUL, and a timeout of 1–300 s. Output is capped at 64 KiB per stream and marked truncated. `exec()` first requires the sandbox to be `Ready`, because a missing sandbox and a failing command both exit 1. Exit 124 at or after the timeout is reported as `timed_out` | The caller can tell what the command did from what the runtime did. |
@@ -67,7 +84,7 @@ AEGIS policies, the prover gate and the enforcement probes follow in later incre
 
 ## Consequences and limitations
 
-- **Upgrades need re-verification.** Everything above holds for 0.1.6. An upgrade means changing `VERIFIED_VERSION`, re-running `make test-openshell` and updating this ADR. Consider `sudo apt-mark hold openshell`.
+- **Upgrades need re-verification.** Everything above holds for the versions it names. An upgrade means changing `VERIFIED_VERSION`, re-running `make test-openshell` and the checks in this ADR, and updating it. Consider `sudo apt-mark hold openshell`.
 - **The workspace is not an access boundary.** The CLI identity is a Platform Admin on a local gateway, so a compromised worker could reach other workspaces through OpenShell directly. The adapter's allow-list and name checks are AEGIS code, not OpenShell enforcement.
 - **Exit status 1 is ambiguous.** A gateway failure during `exec` can look like a command failing with 1. The `Ready` check before each exec narrows this, and the enforcement probes (Increment 3) add positive controls.
 - **CLI error text is parsed in two places:** `not found` and `no global policy revision found`, after removing the wrapping. Both come from OpenShell itself, never from a workload.

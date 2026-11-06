@@ -2,14 +2,14 @@
 
 - **Status:** Accepted for Phase 3
 - **Date:** 2026-11-06
-- **Covers:** the code as built at the end of Phase 3, against NVIDIA OpenShell 0.1.6 (ADR-0016 to ADR-0019).
+- **Covers:** the code as built at the end of Phase 3, against NVIDIA OpenShell 0.1.6 and re-verified on 0.1.7 in Phase 4 (ADR-0016 to ADR-0019).
 - **Extends:** the [Phase 1](phase-1-threat-model.md) and [Phase 2](phase-2-threat-model.md) threat models. Everything there still holds unless this document says otherwise.
 
 ## 1. Scope
 
 **What Phase 3 adds.**
 
-- **NVIDIA OpenShell 0.1.6** as the runtime enforcement boundary, reached only through a version-pinned CLI adapter (ADR-0016).
+- **NVIDIA OpenShell** as the runtime enforcement boundary, reached only through a version-pinned CLI adapter (ADR-0016).
 - **AEGIS's sandbox policies, the probe image and the prover gate** (ADR-0017).
 - **Enforcement probes** that check OpenShell's restrictions from outside the sandbox (ADR-0018).
 - **A fourth task kind, `enforcement_check`**, which runs the probes through the API and the worker and audits every check (ADR-0019).
@@ -54,7 +54,7 @@ Paths are relative to `tests/`. Tests marked *live* run only through `make test-
 |---|---|---|---|
 | R1 | AEGIS's secrets reach the OpenShell CLI or a sandbox | The CLI runs with a scrubbed environment. The sandbox gets no provider, and nothing on the host is mounted into it | `security/test_runtime_boundary.py::test_no_aegis_secret_or_openshell_override_reaches_the_cli`, `integration/test_sandbox_gate_live.py::test_no_host_secret_reaches_a_sandbox` (*live*) |
 | R2 | AEGIS touches sandboxes that are not its own, or uses commands it should not | Only allow-listed commands run, always in AEGIS's workspace, and only on sandboxes named `aegis-*` and labelled `aegis.managed=true` | `security/test_runtime_boundary.py::test_only_allow_listed_commands_run_and_always_in_aegis_scope`, `::test_other_sandboxes_are_never_listed_or_deleted`, `security/test_sandbox_gate.py::test_orphan_cleanup_never_touches_sandboxes_that_are_not_aegis` |
-| R3 | An unverified OpenShell version behaves differently from what was verified | The CLI, prover and gateway must each report exactly 0.1.6, checked before every sandbox | `security/test_runtime_boundary.py::test_an_unverified_or_unreachable_runtime_creates_nothing`, `security/test_enforcement_check.py::test_a_runtime_refused_before_use_fails_the_task_with_its_code_and_runs_no_probe` |
+| R3 | An unverified OpenShell version behaves differently from what was verified | The CLI, prover and gateway must each report exactly the verified version, checked before every sandbox | `security/test_runtime_boundary.py::test_an_unverified_or_unreachable_runtime_creates_nothing`, `security/test_enforcement_check.py::test_a_runtime_refused_before_use_fails_the_task_with_its_code_and_runs_no_probe` |
 | R4 | A widened or unproven policy is used | The prover must find both the submitted policy and the sandbox's effective policy `within_boundary`, covering all five domains. A global policy stops the gate | `security/test_sandbox_gate.py::test_a_submitted_policy_that_is_not_proven_never_creates_a_sandbox`, `::test_an_effective_policy_widened_by_a_provider_is_refused_and_deleted`, `::test_a_global_policy_stops_the_gate_before_anything_is_created` |
 | R5 | A sandbox policy changes silently | A fingerprint over the version, both policies and the Dockerfile is pinned by a test, and every sandbox's fingerprint is audited | `unit/test_sandbox_gate.py::test_the_sandbox_policies_are_pinned` |
 | R6 | Another image runs in place of AEGIS's probe | The image must carry AEGIS's release marker; otherwise the sandbox is deleted unused | `security/test_sandbox_gate.py::test_an_unrecognised_image_is_deleted_unused` |
