@@ -41,6 +41,8 @@ MODEL_PACKAGES_INDEPENDENT_OF = (
 )
 # The sandbox runtime enforces nothing AEGIS decides and depends on none of AEGIS's state.
 RUNTIME_PACKAGES = ("aegis.runtime", "aegis.integrations.openshell")
+# Tools describe and run actions; whether one may run is decided elsewhere.
+TOOL_REGISTRY = "aegis.tool_registry"
 ENVIRONMENT_ACCESS = frozenset({"environ", "environb", "getenv", "putenv", "unsetenv"})
 
 
@@ -97,6 +99,14 @@ RULES = (
             allowed=("aegis.apps.api",),
         )
         for framework in WEB_FRAMEWORKS
+    ),
+    *(
+        Rule(TOOL_REGISTRY, forbidden, "tools know nothing of AEGIS's state or decisions")
+        for forbidden in (*MODEL_PACKAGES_INDEPENDENT_OF, "aegis.integrations")
+    ),
+    *(
+        Rule(package, TOOL_REGISTRY, "decisions cannot depend on how a tool runs")
+        for package in SECURITY_PACKAGES
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
     Rule(
