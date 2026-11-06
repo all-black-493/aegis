@@ -80,17 +80,11 @@ class GenerationRequest:
     seed: int = 0
 
     def __post_init__(self) -> None:
-        problems = []
+        problems = sampling_problems(self.max_output_tokens, self.temperature, self.seed)
         if not self.prompt.strip():
             problems.append("prompt must not be empty")
         if len(self.prompt.encode()) > MAX_PROMPT_BYTES:
             problems.append(f"prompt must be at most {MAX_PROMPT_BYTES} bytes")
-        if not _integer_between(self.max_output_tokens, 1, MAX_OUTPUT_TOKENS):
-            problems.append(f"max_output_tokens must be from 1 to {MAX_OUTPUT_TOKENS}")
-        if isinstance(self.temperature, bool) or not 0 <= self.temperature <= MAX_TEMPERATURE:
-            problems.append(f"temperature must be from 0 to {MAX_TEMPERATURE}")
-        if not _integer_between(self.seed, 0, MAX_SEED):
-            problems.append(f"seed must be from 0 to {MAX_SEED}")
         if problems:
             raise InvalidGenerationError("; ".join(problems))
 
@@ -126,6 +120,17 @@ class ModelProvider(Protocol):
     def check(self) -> ProviderStatus: ...
 
     def generate(self, request: GenerationRequest, stop_requested: StopCheck) -> Generation: ...
+
+
+def sampling_problems(max_output_tokens: object, temperature: float, seed: object) -> list[str]:
+    problems = []
+    if not _integer_between(max_output_tokens, 1, MAX_OUTPUT_TOKENS):
+        problems.append(f"max_output_tokens must be from 1 to {MAX_OUTPUT_TOKENS}")
+    if isinstance(temperature, bool) or not 0 <= temperature <= MAX_TEMPERATURE:
+        problems.append(f"temperature must be from 0 to {MAX_TEMPERATURE}")
+    if not _integer_between(seed, 0, MAX_SEED):
+        problems.append(f"seed must be from 0 to {MAX_SEED}")
+    return problems
 
 
 def bounded_text(text: str, limit: int = MAX_OUTPUT_BYTES) -> tuple[str, bool]:
