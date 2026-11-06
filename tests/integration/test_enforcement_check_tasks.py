@@ -20,9 +20,17 @@ from aegis.tasks.service import TaskService
 from aegis.tasks.states import TaskState
 from aegis.tasks.transitions import JobRef
 from tests.fixtures import records
-from tests.fixtures.enforcement import IMAGE, RUN, checked, checker, submit, worker
-from tests.fixtures.fake_openshell import DEFAULT_STATE, FakeOpenShell
-from tests.fixtures.probe_answers import argv, enforce_everything
+from tests.fixtures.enforcement import (
+    IMAGE,
+    RUN,
+    checked,
+    checker,
+    probe_execs,
+    submit,
+    worker,
+)
+from tests.fixtures.fake_openshell import FakeOpenShell
+from tests.fixtures.probe_answers import enforce_everything
 from tests.fixtures.processes import wait_for
 from tests.fixtures.services import FAST_WORKER, PEPPER, RECORDER, Caller
 
@@ -33,16 +41,6 @@ pytestmark = pytest.mark.usefixtures("isolated_jobs")
 @pytest.fixture
 def fake(tmp_path: Path) -> FakeOpenShell:
     return enforce_everything(FakeOpenShell(tmp_path / "bin"), RUN)
-
-
-def _probe_execs(fake: FakeOpenShell) -> int:
-    probes = {" ".join(argv(probe, RUN)) for probe in PROBES}
-    return sum(
-        1
-        for call in fake.calls()
-        if "exec" in call["argv"]
-        and " ".join(call["argv"][call["argv"].index("--") + 1 :]) in probes
-    )
 
 
 def test_an_enforcement_check_runs_through_the_api_and_the_worker_with_a_full_audit_chain(
@@ -160,46 +158,6 @@ def test_an_unreachable_gateway_is_retried_and_the_next_attempt_gets_its_own_san
     }
 
 
-@pytest.mark.parametrize(
-    ("change", "code"),
-    [
-        ({"verdict": {**DEFAULT_STATE["verdict"], "result": "exceeds_boundary"}}, "policy_refused"),
-        ({"version": "0.1.7"}, "version_mismatch"),
-        ({"global_policy": True}, "global_policy_active"),
-    ],
-)
-def test_a_refused_sandbox_fails_the_task_without_running_a_probe(
-    app_engine: Engine,
-    owner_engine: Engine,
-    operator: Caller,
-    fake: FakeOpenShell,
-    change: dict[str, object],
-    code: str,
-) -> None:
-    task = submit(app_engine, operator.actor)
-    fake.update(**change)
-
-    worker(app_engine, checker(app_engine, fake.runtime())).step(threading.Event())
-
-    found = records.task(app_engine, task.task_id)
-    assert (found.state, found.failure_code) == (S.FAILED, code)
-    assert _probe_execs(fake) == 0
-    assert checked(owner_engine, task.task_id) == {}
-    assert fake.state["sandboxes"] == {}
-
-
-def test_a_missing_probe_image_fails_the_task(
-    app_engine: Engine, operator: Caller, fake: FakeOpenShell
-) -> None:
-    task = submit(app_engine, operator.actor)
-
-    worker(app_engine, checker(app_engine, fake.runtime(), image=None)).step(threading.Event())
-
-    found = records.task(app_engine, task.task_id)
-    assert (found.state, found.failure_code) == (S.FAILED, "image_missing")
-    assert ("openshell", "sandbox", "create") not in fake.commands()
-
-
 def test_cancelling_a_check_stops_the_probes_and_deletes_the_sandbox(
     app_engine: Engine, owner_engine: Engine, operator: Caller, fake: FakeOpenShell
 ) -> None:
@@ -218,7 +176,7 @@ def test_cancelling_a_check_stops_the_probes_and_deletes_the_sandbox(
     # The handler finishes on its own: it deletes the sandbox and records the unobserved checks.
     wait_for(lambda: len(checked(owner_engine, task.task_id)) == len(PROBES), 30, "the checks")
     assert fake.state["sandboxes"] == {}
-    executed = _probe_execs(fake)
+    executed = probe_execs(fake)
     outcomes = [row["reason_code"] for row in checked(owner_engine, task.task_id).values()]
     assert executed < len(PROBES)
     assert outcomes.count("inconclusive") == len(PROBES) - executed

@@ -1,9 +1,11 @@
+import os
 import shutil
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
+from aegis.config.variables import SECRET_NAMES
 from aegis.integrations.openshell.cli import VERIFIED_VERSION
 from aegis.integrations.openshell.runtime import OpenShellRuntime
 from aegis.runtime.contract import RuntimeRefusedError
@@ -66,3 +68,26 @@ def test_the_real_prover_stops_a_weakened_probe_policy_before_creation(
 
     assert refused.value.code == "policy_refused"
     assert {sandbox.name for sandbox in openshell_runtime.managed()} == before
+
+
+def test_no_host_secret_reaches_a_sandbox(
+    openshell_runtime: OpenShellRuntime, probe_image: str
+) -> None:
+    # This test process holds every AEGIS secret, and the host holds the gateway's mTLS keys.
+    secrets = [os.environ[name] for name in SECRET_NAMES if os.environ.get(name)]
+    assert secrets
+    dotenv = POLICY_DIR.parents[1] / ".env"
+    keys = Path.home() / ".config" / "openshell"
+    name = f"aegis-host-{uuid4().hex[:8]}"
+    gate = SandboxGate(openshell_runtime, load_policies(), probe_image, lambda event: None)
+
+    with gate.open(name, {"aegis.purpose": "test"}):
+        environment = openshell_runtime.exec(name, ["/usr/bin/env"], 30)
+        files = [
+            openshell_runtime.exec(name, ["/usr/bin/ls", str(path)], 30) for path in (dotenv, keys)
+        ]
+
+    assert environment.exit_code == 0
+    assert "AEGIS_" not in environment.stdout
+    assert not [secret for secret in secrets if secret in environment.stdout]
+    assert all(result.exit_code != 0 and result.stdout == "" for result in files)
