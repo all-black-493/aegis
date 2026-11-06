@@ -1,0 +1,39 @@
+# ADR-0022: Execution records and tool authorization
+
+- **Status:** Accepted
+- **Date:** 2026-11-07
+
+## Context
+
+A model can propose a tool call (ADR-0020), and a tool can run in an admitted sandbox (ADR-0021). Nothing yet decides whether a proposal may run, and nothing records what an agent did. Phase 4 requires every tool call to have a saved decision, an audit event and a step record, and the evaluation harness must score runs from AEGIS's own records, not from anything a model reports (ADR-0012).
+
+This ADR covers both halves: what makes a call allowed, and what is kept. The loop that uses them arrives in Increment 4, so this code has no production caller yet.
+
+## Decisions
+
+| Area | Decision | Rationale |
+|---|---|---|
+| Agent identity | Migration 0009 seeds `system:agent` with the system role `agent`, which holds only `tool:invoke`. `worker` and `agent` are the two `SYSTEM_ROLES`; only system identities may hold them, and they hold no other role and no credentials. The agent has no `task:*` permission. | The agent is not the worker and not the submitter. It cannot read, create or cancel tasks, and it cannot authenticate to the API. |
+| One decision per call | `tool.invoke` is decided in two stages like every other action. `authorize()` needs `tool:invoke`; a refusal there is `agent_not_authorized`. The policy then applies, in order: `initiator_disabled`, `initiator_not_authorized`, `submitting_credential_revoked`, `run_not_active`, `tool_not_registered`, `tool_role_not_permitted`, `capability_not_granted`, `tool_beyond_low_risk`, `tool_allowed`. | The rules are deterministic and versioned. No model and no task input takes part in the verdict (AGENTS.md §3.4). |
+| Delegation | The agent acts for the task's initiator, and only while they could still do so. Each call rereads their status, their roles and their submitting credential, the same facts `task.execute` checks at the start of a run. | Disabling someone or revoking their credential stops their agent at the next call, not at the next heartbeat. The agent never inherits more than the initiator has. |
+| Capabilities | A run is granted a set of capabilities when it starts, kept on its `agent_runs` row. A tool runs only if everything it requires is in that set. | Permissions are task-scoped and explicit (AGENTS.md §5.1). What a model proposes cannot widen them, because the set is read from the run and not from the call. |
+| The Phase 4 ceiling | `tool_beyond_low_risk` refuses any tool that is not low risk, without network, without approval and inside the sandbox, however it is registered. | README, Phase 4: execution is restricted to explicitly permitted low-risk operations until Phases 5 and 6. A registry change alone cannot relax this; it takes a new policy version. |
+| What decides the facts | `ToolRequest` is built by AEGIS from the registry and the run. The model supplies only the name and the arguments, and the arguments reach the decision only as a digest and a size. | A decision's inputs are saved and replayable (ADR-0007), and they must not store tool content. |
+| Invoking | `GovernedTools.invoke` is the only route from a proposal to an action. It decides and records in one transaction, runs the tool only if allowed, then writes the step and the audit event in a second transaction. A refused call writes its step in the first transaction, except on a run that has ended, where the saved decision is the record. | A tool never runs without a saved decision. A failed write raises, so the caller cannot carry on as if the call had been recorded. Ending the run on that error is the loop's job (Increment 4). |
+| Records | `agent_runs` holds one row per job attempt: scenario, capabilities, sandbox, and the policy version and fingerprint. `agent_steps` holds numbered `model`, `tool` and `end` steps, each with a code, bounded content, its SHA-256 and its size. `aegis.agents` owns both. | One attempt, one run, and every step in one order. A retry is a new run, and its steps do not mix with the last attempt's. |
+| Immutable | Both tables are append-only for every role: triggers refuse update, delete and truncate, and `aegis_app` has only `SELECT` and column `INSERT`. A run's end is an `end` step, not a status column. | Nothing is rewritten, so a run has no state that can change after the fact. |
+| What the database enforces | Triggers require the job to be running at the run's attempt, keep step numbers gapless and refuse any step after `end`. A tool step must cite a `tool.invoke` decision for this task, job and attempt, and an allowed decision cannot be stored as `not_authorized`, nor a denied one as anything else. Unique constraints allow one run per attempt and one step per decision. | These hold even for a process that holds stolen `aegis_app` credentials and skips AEGIS's code (the same stance as ADR-0008). They show the records are consistent, not that they are honest: such a process can still write a false step. |
+| Content and the audit store | Bounded content lives in `agent_steps` (at most 80 KiB, checked in code and in the database) and nowhere else. `agent.started`, `tool.invoked` and `agent.finished` carry identifiers, codes, digests and sizes. Content never reaches the audit store, decisions or logs (decision U6). | Tool output is untrusted and may hold anything a workspace holds. The audit store can prove what was recorded without keeping it. |
+| One encoding | `canonical()` is sorted, compact JSON. NUL, which `jsonb` cannot hold, becomes U+FFFD in each string before the digest is taken, so a digest is always of what was stored. Proposals with lone surrogates or `NaN` never get this far: `ToolCall` and the stream refuse them (ADR-0020). | Anyone can recompute a stored digest from the stored content, and literal text such as a backslash followed by `u0000` is left alone. |
+| Reading | `GET /v1/tasks/{id}/steps` returns the task's runs and a page of its steps (`limit`, `after`). It goes through the task service, so whoever may read the task may read its steps, anyone else gets the same `404`, and a privileged read is audited as `task.read_privileged`. | No new access rule to get wrong, and this is the read-only path the evaluation harness needs (ADR-0012). |
+| Policy | Version `2026.11.07-1` adds the rules above. | Every rule change gets a version and a pinned fingerprint (ADR-0007). |
+| Downgrade | Migration 0009's downgrade (development only, ADR-0003) drops both tables and the role row, and restores the action check as `NOT VALID`, so saved `tool.invoke` decisions survive. The `system:agent` identity stays, because audit events may name it. | History is never lost. |
+
+## Consequences and limitations
+
+- **No caller yet.** `RunRecords` and `GovernedTools` are used only by tests until Increment 4, which adds the `agent_run` task kind and decides what a run is granted.
+- **A tool can run and go unrecorded.** The tool runs between the two transactions. If the job loses its lease or the database fails in that gap, the action has happened, the allow decision and its `security.decision` event remain, and no step exists. An allow decision with no step marks that gap, so it can be detected but not prevented.
+- **A refused call on a finished run has no step.** Its decision and `security.decision` event are the record. So "every call has a step" holds for calls made during a run.
+- **Content is readable by anyone who can read the task**, including auditors and admins. Tool content can include whatever is in the scenario's workspace, and it is kept for as long as the task. Retention is not designed yet.
+- **Stored content is the recorded form, not a byte-exact copy.** NUL is replaced before storage, and the digest covers the stored form.
+- **Records are not evidence.** A step shows what AEGIS recorded. Independent verification arrives in Phase 7.

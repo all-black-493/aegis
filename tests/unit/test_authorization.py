@@ -10,6 +10,7 @@ from aegis.authorization.access import (
 )
 from aegis.authorization.catalog import (
     ROLE_PERMISSIONS,
+    SYSTEM_ROLES,
     Action,
     IdentityKind,
     Permission,
@@ -18,7 +19,13 @@ from aegis.authorization.catalog import (
 )
 from aegis.authorization.contract import Effect
 
-RESOURCE_ACTIONS = (Action.TASK_SUBMIT, Action.TASK_READ, Action.TASK_CANCEL, Action.TASK_EXECUTE)
+RESOURCE_ACTIONS = (
+    Action.TASK_SUBMIT,
+    Action.TASK_READ,
+    Action.TASK_CANCEL,
+    Action.TASK_EXECUTE,
+    Action.TOOL_INVOKE,
+)
 COLLECTION_ACTIONS = (Action.TASK_LIST, Action.TASK_LIST_ALL)
 CASES = [(action, owner) for action in RESOURCE_ACTIONS for owner in ("own", "other")] + [
     (action, None) for action in COLLECTION_ACTIONS
@@ -49,11 +56,15 @@ ALLOWED: dict[Role, set[tuple[Action, str | None]]] = {
         (Action.TASK_EXECUTE, "own"),
         (Action.TASK_EXECUTE, "other"),
     },
+    Role.AGENT: {
+        (Action.TOOL_INVOKE, "own"),
+        (Action.TOOL_INVOKE, "other"),
+    },
 }
 
 
 def actor(*roles: Role) -> ActorContext:
-    kind = IdentityKind.SYSTEM if Role.WORKER in roles else IdentityKind.HUMAN
+    kind = IdentityKind.SYSTEM if SYSTEM_ROLES & set(roles) else IdentityKind.HUMAN
     return ActorContext(uuid4(), kind, frozenset(roles))
 
 
@@ -87,6 +98,20 @@ def test_worker_role_grants_only_task_execute() -> None:
     for role, permissions in ROLE_PERMISSIONS.items():
         if role is not Role.WORKER:
             assert Permission.TASK_EXECUTE not in permissions
+
+
+def test_agent_role_grants_only_tool_invoke() -> None:
+    assert ROLE_PERMISSIONS[Role.AGENT] == {Permission.TOOL_INVOKE}
+    for role, permissions in ROLE_PERMISSIONS.items():
+        if role is not Role.AGENT:
+            assert Permission.TOOL_INVOKE not in permissions
+
+
+def test_only_a_system_identity_can_hold_the_agent_role() -> None:
+    with pytest.raises(InvalidActorError):
+        ActorContext(uuid4(), IdentityKind.HUMAN, frozenset({Role.AGENT}))
+    with pytest.raises(InvalidActorError):
+        ActorContext(uuid4(), IdentityKind.SYSTEM, frozenset({Role.AGENT, Role.OPERATOR}))
 
 
 def test_roles_combine_their_permissions() -> None:

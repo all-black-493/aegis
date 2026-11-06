@@ -10,9 +10,16 @@ from aegis.authorization.catalog import (
     IdentityKind,
     Permission,
     ResourceType,
+    Role,
 )
 from aegis.authorization.contract import Effect, Stage
-from aegis.policy.facts import DecisionInputs, ExecutionFacts, SubmissionFacts, TaskFacts
+from aegis.policy.facts import (
+    DecisionInputs,
+    ExecutionFacts,
+    SubmissionFacts,
+    TaskFacts,
+    ToolFacts,
+)
 
 ACTIVE_TASK_QUOTA = 10
 APPROVAL_WAIT_SECONDS = 30
@@ -24,6 +31,11 @@ MAX_GENERATE_TOKENS = 512
 GENERATE_TEMPERATURE = 0.0
 GENERATE_SEED = 0
 TASK_KINDS = frozenset({"noop", "wait", "generate", "enforcement_check"})
+# All an agent may do until the risk engine and approvals exist (README, Phase 4).
+ALLOWED_TOOL_RISK = "low"
+ALLOWED_TOOL_NETWORK = "none"
+ALLOWED_TOOL_APPROVAL = "none"
+ALLOWED_TOOL_BOUNDARY = "sandbox"
 
 
 @dataclass(frozen=True)
@@ -48,11 +60,23 @@ class Policy:
     digest: str
     submission_rules: tuple[Rule[SubmissionFacts], ...]
     execution_rules: tuple[Rule[ExecutionFacts], ...]
+    tool_rules: tuple[Rule[ToolFacts], ...] = ()
 
 
 class _AboutTask(Protocol):
     @property
     def task(self) -> TaskFacts: ...
+
+
+class _AboutInitiator(Protocol):
+    @property
+    def initiator_active(self) -> bool: ...
+
+    @property
+    def initiator_roles(self) -> frozenset[Role]: ...
+
+    @property
+    def submitting_credential_revoked(self) -> bool: ...
 
 
 def input_bytes(task_input: Any) -> int:
@@ -77,11 +101,15 @@ def decide(policy: Policy, inputs: DecisionInputs) -> Verdict:
         reason = authorization.reason
         if inputs.action is Action.TASK_EXECUTE:
             reason = "executor_not_authorized"
+        elif inputs.action is Action.TOOL_INVOKE:
+            reason = "agent_not_authorized"
         return Verdict(Effect.DENY, Stage.AUTHORIZATION, (reason,))
     if inputs.action is Action.TASK_SUBMIT:
         return _evaluate(policy.submission_rules, inputs.submission)
     if inputs.action is Action.TASK_EXECUTE:
         return _evaluate(policy.execution_rules, inputs.execution)
+    if inputs.action is Action.TOOL_INVOKE:
+        return _evaluate(policy.tool_rules, inputs.tool)
     return Verdict(Effect.ALLOW, Stage.AUTHORIZATION, (authorization.reason,))
 
 
@@ -175,17 +203,17 @@ def submission_allowed(facts: SubmissionFacts) -> Outcome | None:
     return Outcome(Effect.ALLOW, "submission_allowed") if _runnable(facts.task) else None
 
 
-def initiator_disabled(facts: ExecutionFacts) -> Outcome | None:
+def initiator_disabled(facts: _AboutInitiator) -> Outcome | None:
     return None if facts.initiator_active else Outcome(Effect.DENY, "initiator_disabled")
 
 
-def initiator_not_authorized(facts: ExecutionFacts) -> Outcome | None:
+def initiator_not_authorized(facts: _AboutInitiator) -> Outcome | None:
     if any(Permission.TASK_CREATE in ROLE_PERMISSIONS[role] for role in facts.initiator_roles):
         return None
     return Outcome(Effect.DENY, "initiator_not_authorized")
 
 
-def submitting_credential_revoked(facts: ExecutionFacts) -> Outcome | None:
+def submitting_credential_revoked(facts: _AboutInitiator) -> Outcome | None:
     if facts.submitting_credential_revoked:
         return Outcome(Effect.DENY, "submitting_credential_revoked")
     return None
@@ -193,6 +221,46 @@ def submitting_credential_revoked(facts: ExecutionFacts) -> Outcome | None:
 
 def execution_allowed(facts: ExecutionFacts) -> Outcome | None:
     return Outcome(Effect.ALLOW, "execution_allowed") if _runnable(facts.task) else None
+
+
+def run_not_active(facts: ToolFacts) -> Outcome | None:
+    return None if facts.request.run_active else Outcome(Effect.DENY, "run_not_active")
+
+
+def tool_not_registered(facts: ToolFacts) -> Outcome | None:
+    return None if facts.request.registered else Outcome(Effect.DENY, "tool_not_registered")
+
+
+def tool_role_not_permitted(facts: ToolFacts) -> Outcome | None:
+    request = facts.request
+    if request.registered and Role.AGENT.value not in request.permitted_roles:
+        return Outcome(Effect.DENY, "tool_role_not_permitted")
+    return None
+
+
+def capability_not_granted(facts: ToolFacts) -> Outcome | None:
+    request = facts.request
+    if request.registered and not request.required_capabilities <= request.granted_capabilities:
+        return Outcome(Effect.DENY, "capability_not_granted")
+    return None
+
+
+def tool_beyond_low_risk(facts: ToolFacts) -> Outcome | None:
+    request = facts.request
+    if not request.registered:
+        return None
+    if (request.risk, request.network, request.approval, request.boundary) != (
+        ALLOWED_TOOL_RISK,
+        ALLOWED_TOOL_NETWORK,
+        ALLOWED_TOOL_APPROVAL,
+        ALLOWED_TOOL_BOUNDARY,
+    ):
+        return Outcome(Effect.DENY, "tool_beyond_low_risk")
+    return None
+
+
+def tool_allowed(facts: ToolFacts) -> Outcome | None:
+    return Outcome(Effect.ALLOW, "tool_allowed") if facts.request.registered else None
 
 
 SUBMISSION_RULES: tuple[Rule[SubmissionFacts], ...] = (
@@ -214,4 +282,16 @@ EXECUTION_RULES: tuple[Rule[ExecutionFacts], ...] = (
     input_invalid,
     long_wait,
     execution_allowed,
+)
+
+TOOL_RULES: tuple[Rule[ToolFacts], ...] = (
+    initiator_disabled,
+    initiator_not_authorized,
+    submitting_credential_revoked,
+    run_not_active,
+    tool_not_registered,
+    tool_role_not_permitted,
+    capability_not_granted,
+    tool_beyond_low_risk,
+    tool_allowed,
 )

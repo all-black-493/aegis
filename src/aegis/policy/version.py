@@ -3,11 +3,11 @@ from pathlib import Path
 from types import ModuleType
 
 from aegis.policy import facts, rules
-from aegis.policy.rules import EXECUTION_RULES, SUBMISSION_RULES, Policy
+from aegis.policy.rules import EXECUTION_RULES, SUBMISSION_RULES, TOOL_RULES, Policy
 
 # Bump on every change to aegis.policy.facts or aegis.policy.rules; the fingerprint test will fail
 # until the version and the pinned fingerprint are updated together.
-POLICY_VERSION = "2026.11.02-2"
+POLICY_VERSION = "2026.11.07-1"
 
 
 def fingerprint(version: str, modules: tuple[ModuleType, ...] = (facts, rules)) -> str:
@@ -24,4 +24,5 @@ CURRENT_POLICY = Policy(
     digest=fingerprint(POLICY_VERSION),
     submission_rules=SUBMISSION_RULES,
     execution_rules=EXECUTION_RULES,
+    tool_rules=TOOL_RULES,
 )

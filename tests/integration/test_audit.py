@@ -11,6 +11,7 @@ from psycopg.rows import TupleRow
 from sqlalchemy import Engine, create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 
+from aegis.agents.schema import agent_runs, agent_steps
 from aegis.audit.events import ALLOWED_DETAILS, AuditEvent, AuditEventType, Outcome, Source
 from aegis.audit.recorder import AuditError, AuditRecorder
 from aegis.audit.schema import audit_events
@@ -251,6 +252,8 @@ def _include_object(_obj: Any, name: str | None, kind: str, _reflected: bool, _o
 
 def test_table_definitions_match_the_migrated_schema(owner_engine: Engine) -> None:
     assert set(metadata.tables.values()) == {
+        agent_runs,
+        agent_steps,
         audit_events,
         identities,
         identity_roles,

@@ -225,7 +225,7 @@ def test_readiness_fails_when_the_database_is_down(app_settings: DatabaseSetting
 def test_readiness_fails_when_migrations_are_behind(
     owner_engine: Engine, client: TestClient
 ) -> None:
-    downgrade(owner_engine, "0007")
+    downgrade(owner_engine, "0008")
     try:
         response = client.get("/health/ready")
     finally:

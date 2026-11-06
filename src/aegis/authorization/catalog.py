@@ -14,6 +14,7 @@ class Role(StrEnum):
     OPERATOR = "operator"
     AUDITOR = "auditor"
     WORKER = "worker"
+    AGENT = "agent"
 
 
 class Permission(StrEnum):
@@ -23,6 +24,7 @@ class Permission(StrEnum):
     TASK_CANCEL = "task:cancel"
     TASK_CANCEL_ANY = "task:cancel_any"
     TASK_EXECUTE = "task:execute"
+    TOOL_INVOKE = "tool:invoke"
 
 
 class Action(StrEnum):
@@ -32,6 +34,7 @@ class Action(StrEnum):
     TASK_LIST_ALL = "task.list_all"
     TASK_CANCEL = "task.cancel"
     TASK_EXECUTE = "task.execute"
+    TOOL_INVOKE = "tool.invoke"
 
 
 class ResourceType(StrEnum):
@@ -54,7 +57,8 @@ ROLE_PERMISSIONS: Mapping[Role, frozenset[Permission]] = MappingProxyType(
         ),
         Role.AUDITOR: frozenset({Permission.TASK_READ_ANY}),
         Role.WORKER: frozenset({Permission.TASK_EXECUTE}),
+        Role.AGENT: frozenset({Permission.TOOL_INVOKE}),
     }
 )
 
-SYSTEM_ROLES = frozenset({Role.WORKER})
+SYSTEM_ROLES = frozenset({Role.WORKER, Role.AGENT})

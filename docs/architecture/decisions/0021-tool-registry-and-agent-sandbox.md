@@ -42,7 +42,7 @@ AEGIS's first sandbox policy was written for the probes and carries a network ru
 
 ## Consequences and limitations
 
-- **Nothing calls a tool yet.** `ToolRunner` has no caller until Increment 4, and no tool call is authorized or recorded until Increment 3.
+- **Nothing calls a tool yet.** `ToolRunner` has no production caller until Increment 4. Increment 3 decides and records each call (ADR-0022).
 - **`sandbox exec` is the only interface.** Literal arguments are a property of the CLI, so each new OpenShell release must keep passing the live test.
 - **An older image is refused.** After this change an `AEGIS_OPENSHELL_IMAGE` from release 2 fails with `image_unrecognised` until `make openshell-image` is run again.
 - **`write_file` is capped at 4 KiB,** because content travels as one exec argument.

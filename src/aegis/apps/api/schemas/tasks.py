@@ -1,23 +1,15 @@
-import base64
 import math
 import re
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import Request
-from fastapi.exceptions import RequestValidationError
-from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 from pydantic_core import PydanticCustomError
 
-from aegis.apps.api.context import api_context
-from aegis.apps.api.problems import ApiError
-from aegis.tasks.repository import Position, TaskRecord
-from aegis.tasks.service import TaskService
+from aegis.tasks.repository import TaskRecord
 
 IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9_.:-]{8,128}")
-DEFAULT_PAGE_SIZE = 50
-_CURSOR = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _storable(value: Any) -> Any:
@@ -79,32 +71,6 @@ SUBMIT_OPENAPI = {
 }
 
 
-def task_service(request: Request) -> TaskService:
-    return api_context(request).tasks
-
-
-def idempotency_key(request: Request) -> str:
-    values = request.headers.getlist("idempotency-key")
-    if not values:
-        raise ApiError(400, "idempotency_key_required")
-    if len(values) > 1 or not IDEMPOTENCY_KEY.fullmatch(values[0]):
-        raise ApiError(400, "idempotency_key_invalid")
-    return values[0]
-
-
-async def submission_body(request: Request) -> TaskSubmission:
-    # Parsed here rather than as a body parameter so that authentication and the
-    # Idempotency-Key check run first (ADR-0011).
-    raw = await request.body()
-    try:
-        return TaskSubmission.model_validate_json(raw)
-    except ValidationError as error:
-        errors = error.errors(include_url=False, include_context=False, include_input=False)
-        raise RequestValidationError(
-            [{**item, "loc": ("body", *item["loc"])} for item in errors]
-        ) from None
-
-
 def view(task: TaskRecord) -> TaskView:
     return TaskView(
         id=task.task_id,
@@ -120,22 +86,3 @@ def view(task: TaskRecord) -> TaskView:
         updated_at=task.updated_at,
         finished_at=task.finished_at,
     )
-
-
-def encode_cursor(position: Position) -> str:
-    raw = f"{position.created_at.isoformat()}|{position.task_id}".encode()
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-
-
-def decode_cursor(cursor: str) -> Position:
-    try:
-        if not _CURSOR.fullmatch(cursor):
-            raise ValueError("malformed cursor")
-        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode("ascii")
-        created_at, _, task_id = raw.partition("|")
-        position = Position(datetime.fromisoformat(created_at), UUID(task_id))
-    except ValueError:
-        raise ApiError(400, "invalid_cursor") from None
-    if position.created_at.tzinfo is None:
-        raise ApiError(400, "invalid_cursor")
-    return position

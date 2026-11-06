@@ -5,9 +5,11 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from fastapi.routing import iter_route_contexts
 from sqlalchemy import create_engine
 
-from aegis.apps.api.routes import health, v1
+from aegis.apps.api.health import router as health
+from aegis.apps.api.v1.router import router as v1
 from aegis.apps.worker.__main__ import main
 from aegis.audit.recorder import AuditRecorder
 from aegis.config.logs import Redactor
@@ -283,7 +285,11 @@ def test_backoff_doubles_up_to_a_cap() -> None:
 
 
 def test_no_route_retries_or_manages_jobs() -> None:
-    paths = {route.path for router in (health, v1) for route in router.routes}  # type: ignore[attr-defined]
+    paths = {
+        str(context.path)
+        for router in (health, v1)
+        for context in iter_route_contexts(router.routes)
+    }
 
     assert not [path for path in paths if "retry" in path or "job" in path]
 

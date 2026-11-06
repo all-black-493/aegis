@@ -15,6 +15,8 @@ from aegis.policy.facts import (
     ExecutionFacts,
     SubmissionFacts,
     TaskFacts,
+    ToolFacts,
+    ToolRequest,
     from_document,
     to_document,
 )
@@ -31,10 +33,11 @@ from aegis.policy.rules import (
 )
 from aegis.policy.version import CURRENT_POLICY, POLICY_VERSION, fingerprint
 
-PINNED_VERSION = "2026.11.02-2"
-PINNED_DIGEST = "9052b517d68a4124095c78fe9c6a9b0a5720e83efc299f973e7dfe385e32a8bf"
+PINNED_VERSION = "2026.11.07-1"
+PINNED_DIGEST = "1e05afd8275705a7c40d781ef979e8f1820bc71b9c239d0d813988a15eb16e94"
 SUBMITTER = UUID("00000000-0000-4000-8000-0000000000aa")
 WORKER = UUID("00000000-0000-4000-8000-000000000001")
+AGENT = UUID("00000000-0000-4000-8000-000000000003")
 
 
 def _task(kind: str = "noop", task_input: Any = None) -> TaskFacts:
@@ -75,6 +78,45 @@ def _execute(
         resource_id=str(uuid4()),
         resource_owner_id=SUBMITTER,
         execution=ExecutionFacts(task or _task(), active, initiator_roles, revoked),
+    )
+
+
+def _tool_request(**changes: Any) -> ToolRequest:
+    defaults: dict[str, Any] = {
+        "name": "read_file",
+        "registered": True,
+        "version": "1",
+        "risk": "low",
+        "network": "none",
+        "approval": "none",
+        "boundary": "sandbox",
+        "required_capabilities": frozenset({"workspace:read"}),
+        "permitted_roles": frozenset({"agent"}),
+        "granted_capabilities": frozenset({"workspace:read", "workspace:write"}),
+        "run_active": True,
+        "arguments_sha256": "a" * 64,
+        "arguments_bytes": 16,
+    }
+    return ToolRequest(**{**defaults, **changes})
+
+
+def _invoke(
+    request: ToolRequest | None = None,
+    *,
+    actor_roles: frozenset[Role] = frozenset({Role.AGENT}),
+    actor_kind: IdentityKind = IdentityKind.SYSTEM,
+    active: bool = True,
+    initiator_roles: frozenset[Role] = frozenset({Role.OPERATOR}),
+    revoked: bool = False,
+) -> DecisionInputs:
+    return DecisionInputs(
+        action=Action.TOOL_INVOKE,
+        actor_id=AGENT,
+        actor_kind=actor_kind,
+        actor_roles=actor_roles,
+        resource_id="00000000-0000-4000-8000-0000000000bb",
+        resource_owner_id=SUBMITTER,
+        tool=ToolFacts(request or _tool_request(), active, initiator_roles, revoked),
     )
 
 
@@ -288,6 +330,92 @@ def test_approval_is_never_an_authorization_outcome() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("inputs", "effect", "reasons"),
+    [
+        (_invoke(), Effect.ALLOW, ("tool_allowed",)),
+        (
+            _invoke(_tool_request(registered=False, name="shell")),
+            Effect.DENY,
+            ("tool_not_registered",),
+        ),
+        (
+            _invoke(
+                _tool_request(
+                    required_capabilities=frozenset({"workspace:write"}),
+                    granted_capabilities=frozenset({"workspace:read"}),
+                )
+            ),
+            Effect.DENY,
+            ("capability_not_granted",),
+        ),
+        (
+            _invoke(_tool_request(permitted_roles=frozenset({"operator"}))),
+            Effect.DENY,
+            ("tool_role_not_permitted",),
+        ),
+        (_invoke(_tool_request(risk="medium")), Effect.DENY, ("tool_beyond_low_risk",)),
+        (_invoke(_tool_request(network="restricted")), Effect.DENY, ("tool_beyond_low_risk",)),
+        (_invoke(_tool_request(approval="required")), Effect.DENY, ("tool_beyond_low_risk",)),
+        (_invoke(_tool_request(boundary="host")), Effect.DENY, ("tool_beyond_low_risk",)),
+        (_invoke(_tool_request(run_active=False)), Effect.DENY, ("run_not_active",)),
+        (_invoke(active=False), Effect.DENY, ("initiator_disabled",)),
+        (_invoke(revoked=True), Effect.DENY, ("submitting_credential_revoked",)),
+        (
+            _invoke(initiator_roles=frozenset({Role.AUDITOR})),
+            Effect.DENY,
+            ("initiator_not_authorized",),
+        ),
+    ],
+)
+def test_tool_rules(inputs: DecisionInputs, effect: Effect, reasons: tuple[str, ...]) -> None:
+    verdict = _verdict(inputs)
+
+    assert (verdict.effect, verdict.stage, verdict.reason_codes) == (effect, Stage.POLICY, reasons)
+
+
+def test_every_failed_tool_rule_is_reported_at_once() -> None:
+    verdict = _verdict(_invoke(_tool_request(risk="high", run_active=False), active=False))
+
+    assert verdict.reason_codes == (
+        "initiator_disabled",
+        "run_not_active",
+        "tool_beyond_low_risk",
+    )
+
+
+@pytest.mark.parametrize(
+    ("roles", "kind"),
+    [
+        (frozenset({Role.WORKER}), IdentityKind.SYSTEM),
+        (frozenset(), IdentityKind.SYSTEM),
+        (frozenset({Role.OPERATOR}), IdentityKind.HUMAN),
+        (frozenset({Role.ADMIN}), IdentityKind.HUMAN),
+    ],
+)
+def test_only_the_agent_role_can_invoke_a_tool(roles: frozenset[Role], kind: IdentityKind) -> None:
+    verdict = _verdict(_invoke(actor_roles=roles, actor_kind=kind))
+
+    assert (verdict.effect, verdict.stage, verdict.reason_codes) == (
+        Effect.DENY,
+        Stage.AUTHORIZATION,
+        ("agent_not_authorized",),
+    )
+
+
+def test_a_tool_decision_without_facts_is_denied() -> None:
+    inputs = replace(_invoke(), tool=None)
+
+    assert _verdict(inputs).reason_codes == ("evaluation_error",)
+
+
+def test_saved_tool_inputs_hold_a_digest_and_never_the_arguments() -> None:
+    document = to_document(_invoke())
+
+    assert set(document["tool"]["request"]) >= {"arguments_sha256", "arguments_bytes"}
+    assert "arguments" not in document["tool"]["request"]
+
+
 def _corpus() -> list[DecisionInputs]:
     tasks = [
         _task("noop", {}),
@@ -306,6 +434,9 @@ def _corpus() -> list[DecisionInputs]:
         *(_execute(task) for task in tasks),
         _execute(active=False, revoked=True),
         _execute(worker_roles=frozenset()),
+        _invoke(),
+        _invoke(_tool_request(registered=False, name="shell")),
+        _invoke(active=False),
     ]
 
 

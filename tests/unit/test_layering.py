@@ -13,6 +13,7 @@ AUDIT_INDEPENDENT_OF = (
     "aegis.policy",
     "aegis.tasks",
     "aegis.jobs",
+    "aegis.agents",
 )
 AUTHORIZATION_INDEPENDENT_OF = (
     "aegis.db",
@@ -25,6 +26,7 @@ AUTHORIZATION_INDEPENDENT_OF = (
     "alembic",
 )
 EVALUATION_FRAMEWORKS = ("deepeval", "deepteam")
+WEB_FRAMEWORKS = ("fastapi", "starlette")
 MODEL_PACKAGES = ("aegis.model_providers", "aegis.integrations")
 MODEL_PACKAGES_INDEPENDENT_OF = (
     "aegis.db",
@@ -34,6 +36,7 @@ MODEL_PACKAGES_INDEPENDENT_OF = (
     "aegis.policy",
     "aegis.tasks",
     "aegis.jobs",
+    "aegis.agents",
     "sqlalchemy",
     "psycopg",
     "alembic",
@@ -91,11 +94,24 @@ RULES = (
         for runtime in RUNTIME_PACKAGES
     ),
     *(
+        Rule(
+            "aegis",
+            framework,
+            "the worker and CLI share these packages, so only the API uses the web framework",
+            allowed=("aegis.apps.api",),
+        )
+        for framework in WEB_FRAMEWORKS
+    ),
+    *(
         Rule(TOOL_REGISTRY, forbidden, "tools know nothing of AEGIS's state or decisions")
         for forbidden in (*MODEL_PACKAGES_INDEPENDENT_OF, "aegis.integrations")
     ),
     *(
         Rule(package, TOOL_REGISTRY, "decisions cannot depend on how a tool runs")
+        for package in SECURITY_PACKAGES
+    ),
+    *(
+        Rule(package, "aegis.agents", "decisions cannot depend on the agent that asks for them")
         for package in SECURITY_PACKAGES
     ),
     Rule("aegis", "aegis.apps", "entry points are leaves", allowed=("aegis.apps",)),
@@ -208,6 +224,8 @@ def test_source_tree_respects_the_layering_rules() -> None:
         ("aegis/authorization/access.py", "import sqlalchemy\n", "authorization is pure"),
         ("aegis/authorization/access.py", "from aegis.db import engine\n", "authorization is pure"),
         ("aegis/jobs/worker.py", "import deepeval\n", "outside the application"),
+        ("aegis/tasks/service.py", "from fastapi import Depends\n", "only the API"),
+        ("aegis/jobs/worker.py", "import starlette\n", "only the API"),
         ("aegis/policy/rules.py", "from deepteam import red_team\n", "outside the application"),
         ("aegis/apps/worker/__main__.py", "from deepeval.metrics import X\n", "outside the"),
         ("aegis/model_providers/mock.py", "from aegis.db import engine\n", "know nothing"),

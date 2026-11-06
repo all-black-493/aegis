@@ -10,12 +10,20 @@ from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.access import ActorContext
 from aegis.authorization.catalog import Action, IdentityKind, ResourceType, Role
 from aegis.authorization.contract import Effect, SecurityDecision, Stage
-from aegis.identity.schema import SYSTEM_WORKER_ID, credentials, identities, identity_roles
+from aegis.identity.schema import (
+    SYSTEM_AGENT_ID,
+    SYSTEM_WORKER_ID,
+    credentials,
+    identities,
+    identity_roles,
+)
 from aegis.policy.facts import (
     DecisionInputs,
     ExecutionFacts,
     SubmissionFacts,
     TaskFacts,
+    ToolFacts,
+    ToolRequest,
     from_document,
     to_document,
 )
@@ -27,6 +35,7 @@ from aegis.tasks.states import TERMINAL_STATES, TaskState
 from aegis.tasks.transitions import JobRef, PolicyRef
 
 SUBMISSION_LOCK = 7_301_004
+WORKER_ACTIONS = frozenset({Action.TASK_EXECUTE, Action.TOOL_INVOKE})
 ACTIVE_STATES = tuple(s.value for s in TaskState if s not in TERMINAL_STATES | {TaskState.CREATED})
 
 
@@ -94,12 +103,7 @@ class DecisionService:
         return Decided(decision, inputs)
 
     def execution(self, connection: Connection, task: TaskRecord, job: JobRef) -> Decided:
-        initiator = connection.execute(
-            select(identities.c.status).where(identities.c.id == task.initiator_id)
-        ).scalar_one()
-        revoked_at = connection.execute(
-            select(credentials.c.revoked_at).where(credentials.c.id == task.submitted_credential_id)
-        ).scalar_one()
+        active, roles, revoked = _initiator(connection, task)
         inputs = DecisionInputs(
             action=Action.TASK_EXECUTE,
             actor_id=SYSTEM_WORKER_ID,
@@ -109,10 +113,36 @@ class DecisionService:
             resource_owner_id=task.owner_id,
             execution=ExecutionFacts(
                 task=_task_facts(task.kind.value, task.input),
-                initiator_active=initiator == "active",
-                initiator_roles=_roles(connection, task.initiator_id),
-                submitting_credential_revoked=revoked_at is not None,
+                initiator_active=active,
+                initiator_roles=roles,
+                submitting_credential_revoked=revoked,
             ),
+        )
+        decision = self._decision(
+            connection,
+            inputs,
+            decide(self._policy, inputs),
+            actor_credential_id=None,
+            subject_id=task.initiator_id,
+            task_id=task.task_id,
+            job=job,
+        )
+        return Decided(decision, inputs)
+
+    def tool_invocation(
+        self, connection: Connection, task: TaskRecord, job: JobRef, request: ToolRequest
+    ) -> Decided:
+        # The initiator's standing is read again for every call: a task's agent acts for them,
+        # and loses that the moment they do.
+        active, roles, revoked = _initiator(connection, task)
+        inputs = DecisionInputs(
+            action=Action.TOOL_INVOKE,
+            actor_id=SYSTEM_AGENT_ID,
+            actor_kind=IdentityKind.SYSTEM,
+            actor_roles=_roles(connection, SYSTEM_AGENT_ID),
+            resource_id=str(task.task_id),
+            resource_owner_id=task.owner_id,
+            tool=ToolFacts(request, active, roles, revoked),
         )
         decision = self._decision(
             connection,
@@ -177,7 +207,7 @@ class DecisionService:
             connection,
             AuditEvent(
                 event_type=AuditEventType.SECURITY_DECISION,
-                source=Source.WORKER if decision.action is Action.TASK_EXECUTE else Source.API,
+                source=Source.WORKER if decision.action in WORKER_ACTIONS else Source.API,
                 outcome=Outcome.DENIED if decision.effect is Effect.DENY else Outcome.SUCCESS,
                 actor_id=decision.actor_id,
                 actor_kind=ActorKind(decision.actor_kind.value),
@@ -273,6 +303,16 @@ class DecisionService:
             job_id=job.job_id if job else None,
             job_attempt=job.attempt if job else None,
         )
+
+
+def _initiator(connection: Connection, task: TaskRecord) -> tuple[bool, frozenset[Role], bool]:
+    status = connection.execute(
+        select(identities.c.status).where(identities.c.id == task.initiator_id)
+    ).scalar_one()
+    revoked_at = connection.execute(
+        select(credentials.c.revoked_at).where(credentials.c.id == task.submitted_credential_id)
+    ).scalar_one()
+    return status == "active", _roles(connection, task.initiator_id), revoked_at is not None
 
 
 def _roles(connection: Connection, identity_id: UUID) -> frozenset[Role]:
