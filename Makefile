@@ -37,7 +37,7 @@ up-local-ai: require-env ## Start PostgreSQL and the local Ollama server (127.0.
 model-pull: require-uv require-env ## Download AEGIS_OLLAMA_MODEL into the local Ollama server
 	$(UV) run --locked --env-file .env aegis model pull
 
-openshell-init: require-uv require-env ## Create AEGIS's OpenShell workspace and check the runtime (needs OpenShell 0.1.6)
+openshell-init: require-uv require-env ## Create AEGIS's OpenShell workspace and check the runtime (needs OpenShell 0.1.7)
 	$(UV) run --locked --env-file .env aegis openshell init
 
 openshell-image: ## Build the OpenShell probe image offline from the local ubuntu:24.04 and print its ID

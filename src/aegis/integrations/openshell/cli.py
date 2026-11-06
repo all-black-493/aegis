@@ -13,7 +13,7 @@ from aegis.runtime.contract import RuntimeRefusedError
 # Installed by NVIDIA's Debian package (ADR-0016). No setting can point AEGIS at another binary.
 OPENSHELL = Path("/usr/bin/openshell")
 PROVER = Path("/usr/bin/openshell-prover")
-VERIFIED_VERSION = "0.1.6"
+VERIFIED_VERSION = "0.1.7"
 # The only commands AEGIS runs. Global policies, providers, services, forwards and policy
 # changes on live sandboxes are deliberately absent.
 ALLOWED_COMMANDS = frozenset(

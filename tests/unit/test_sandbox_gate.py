@@ -119,7 +119,7 @@ def test_an_admitted_sandbox_is_proven_twice_recognised_audited_and_deleted(
     assert (created.succeeded, created.reason) == (True, "verified")
     assert dict(created.details) == {
         "sandbox_id": "id-1",
-        "runtime_version": "0.1.6",
+        "runtime_version": "0.1.7",
         "image": IMAGE,
         "policy_version": PINNED_VERSION,
         "policy_fingerprint": PINNED_FINGERPRINT,

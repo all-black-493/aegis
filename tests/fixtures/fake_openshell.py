@@ -166,9 +166,9 @@ else:
 """
 
 DEFAULT_STATE: dict[str, Any] = {
-    "version": "0.1.6",
-    "prover_version": "0.1.6",
-    "gateway_version": "0.1.6",
+    "version": "0.1.7",
+    "prover_version": "0.1.7",
+    "gateway_version": "0.1.7",
     "status": "connected",
     "status_exit": 0,
     "workspaces": ["default", "aegis"],

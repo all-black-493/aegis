@@ -107,7 +107,8 @@ def test_other_sandboxes_are_never_listed_or_deleted(fake: FakeOpenShell) -> Non
 @pytest.mark.parametrize(
     ("change", "error", "code"),
     [
-        ({"version": "0.1.7"}, RuntimeRefusedError, "version_mismatch"),
+        ({"version": "0.1.8"}, RuntimeRefusedError, "version_mismatch"),
+        ({"version": "0.1.6"}, RuntimeRefusedError, "version_mismatch"),
         ({"prover_version": "0.2.0"}, RuntimeRefusedError, "version_mismatch"),
         ({"gateway_version": "0.1.5"}, RuntimeRefusedError, "version_mismatch"),
         ({"status_exit": 1}, RuntimeUnavailableError, "unreachable"),

@@ -36,13 +36,13 @@ def _spec(policy: Path, name: str = "aegis-test-1") -> SandboxSpec:
 def test_a_connected_gateway_at_the_verified_version_is_healthy(fake: FakeOpenShell) -> None:
     status = fake.runtime().check()
 
-    assert (status.healthy, status.detail, status.version) == (True, "ok", "0.1.6")
+    assert (status.healthy, status.detail, status.version) == (True, "ok", "0.1.7")
 
 
 @pytest.mark.parametrize(
     ("change", "detail", "retryable"),
     [
-        ({"version": "0.1.7"}, "version_mismatch", False),
+        ({"version": "0.1.8"}, "version_mismatch", False),
         ({"prover_version": "0.1.5"}, "version_mismatch", False),
         ({"gateway_version": "0.2.0"}, "version_mismatch", False),
         ({"status": "not_configured"}, "not_connected", True),
@@ -88,7 +88,7 @@ def test_create_requests_a_detached_labelled_sandbox_with_the_policy(
 @pytest.mark.parametrize(
     ("change", "error", "code"),
     [
-        ({"version": "0.1.7"}, RuntimeRefusedError, "version_mismatch"),
+        ({"version": "0.1.8"}, RuntimeRefusedError, "version_mismatch"),
         ({"status": "not_configured"}, RuntimeUnavailableError, "not_connected"),
         ({"create_exit": 1}, RuntimeRefusedError, "sandbox_rejected"),
         ({"create_phase": "Error"}, RuntimeRefusedError, "sandbox_not_ready"),

@@ -15,6 +15,8 @@ AEGIS therefore needs its own evidence, gathered and judged outside the sandbox.
 
 ## Behaviour observed on OpenShell 0.1.6 (2026-11-02)
 
+Re-verified on 0.1.7 on 2026-11-07: every probe holds, and every network result is corroborated (ADR-0016).
+
 | Probe | Observed |
 |---|---|
 | Read a user-owned path missing from the policy; truncate or create in a user-owned read-only path; list `/.openshell`; read `/proc/1/environ` (PID 1 is the `openshell-sandbox` supervisor) | `Permission denied`. Unix permissions would allow the first three, so this is Landlock |
@@ -36,7 +38,7 @@ AEGIS therefore needs its own evidence, gathered and judged outside the sandbox.
 | Verdict | `violated` if any restriction is violated; otherwise `inconclusive` if anything is inconclusive; otherwise `verified`. An empty run is inconclusive | A run is verified only when every control worked and every restriction held. |
 | OpenShell records | After the probes, `openshell logs NAME --source sandbox -n 2000` is read without `--level`, because a warning filter hides policy events. The shorthand OCSF lines are parsed into `EnforcementRecord`s. The suite polls up to five times, a second apart, until every expected record has arrived. Each network result is marked corroborated or not; **corroboration never decides an outcome** | The enforcement point's own account is reported beside AEGIS's evidence and can be checked against it, but it is not trusted on its own. |
 | Lifecycle | `verify_enforcement` starts the canary, opens the gate (ADR-0017), runs the probes and returns the report. The sandbox is deleted and the canary stopped whatever happens | Nothing is left listening or running. |
-| Names | `SANDBOX_NAME` allows `aegis-` plus 1–13 characters (19 in all), the most 0.1.6 accepts. The fake CLI refuses longer names as OpenShell does | Found by the live tests: the contract allowed names OpenShell refuses. |
+| Names | `SANDBOX_NAME` allows `aegis-` plus 1–13 characters (19 in all), the most OpenShell accepts. The fake CLI refuses longer names as OpenShell does | Found by the live tests: the contract allowed names OpenShell refuses. |
 | Tests | CI runs the judging against an in-process fake runtime and through the adapter against the fake CLI. Those runs include lying sandboxes, failed controls, timeouts, lagging records and refused sandboxes. Live tests (`make test-openshell`) run the real suite, which must be `verified` with every network result corroborated. They also widen the boundary and probe policy to let `perl` and any `GET` through: the gate admits that sandbox and the probes must report those two checks as `violated` | The evaluation is exercised on every pull request, and real enforcement locally. |
 
 ## Consequences and limitations

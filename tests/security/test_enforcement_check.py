@@ -188,7 +188,7 @@ def test_a_failed_positive_control_never_verifies_a_check(
 @pytest.mark.parametrize(
     ("change", "code"),
     [
-        ({"version": "0.1.7"}, "version_mismatch"),
+        ({"version": "0.1.8"}, "version_mismatch"),
         ({"prover_version": "0.2.0"}, "version_mismatch"),
         ({"gateway_version": "0.1.5"}, "version_mismatch"),
         ({"workspaces": ["default"]}, "workspace_missing"),
