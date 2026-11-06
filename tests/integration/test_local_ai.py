@@ -15,6 +15,8 @@ from aegis.model_providers.contract import (
     GenerationRequest,
     GenerationStoppedError,
 )
+from aegis.model_providers.steps import Message, Role, StepRequest
+from tests.fixtures.model_steps import READ_FILE, WRITE_FILE
 
 pytestmark = pytest.mark.local_ai
 PROMPT = "Name three primary colours."
@@ -109,3 +111,34 @@ def test_a_wrong_digest_pin_is_refused(ollama: OllamaSettings) -> None:
     status = OllamaProvider(replace(ollama, digest="0" * 64), 120).check()
 
     assert (status.healthy, status.detail) == (False, "digest_mismatch")
+
+
+def test_the_local_model_proposes_a_tool_call_and_takes_its_result(
+    provider: OllamaProvider,
+) -> None:
+    goal = Message(Role.USER, "Read a.txt.")
+    tools = (READ_FILE, WRITE_FILE)
+
+    first = provider.step(StepRequest((goal,), tools, 128), _never)
+
+    # The model's choice of arguments is its own: qwen3:0.6b proposes "/a.txt" here (ADR-0020).
+    [call, *_] = first.tool_calls
+    assert call.name == "read_file"
+    assert "a.txt" in call.arguments["path"]
+    assert first.generation.finish_reason is FinishReason.STOP
+
+    second = provider.step(
+        StepRequest(
+            (
+                goal,
+                Message(Role.ASSISTANT, "", (call,)),
+                Message(Role.TOOL, "alpha", tool_name=call.name),
+            ),
+            tools,
+            128,
+        ),
+        _never,
+    )
+
+    assert second.generation.identity == first.generation.identity
+    assert second.generation.output_tokens > 0

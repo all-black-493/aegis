@@ -14,6 +14,7 @@ from aegis.model_providers.contract import (
     Generation,
     GenerationRequest,
     GenerationStoppedError,
+    InvalidGenerationError,
     ModelIdentity,
     ModelProviderError,
     ModelUnavailableError,
@@ -22,6 +23,13 @@ from aegis.model_providers.contract import (
     ProviderUnavailableError,
     StopCheck,
     bounded_text,
+)
+from aegis.model_providers.steps import (
+    MAX_STEP_TOOL_CALLS,
+    Message,
+    StepReply,
+    StepRequest,
+    ToolCall,
 )
 
 PROVIDER = "ollama"
@@ -38,6 +46,7 @@ _DIGEST = re.compile(r"[0-9a-f]{64}")
 class _Model:
     identity: ModelIdentity
     thinking: bool
+    tools: bool
 
 
 class OllamaProvider:
@@ -53,23 +62,37 @@ class OllamaProvider:
         return ProviderStatus(healthy=True, detail="ok", identity=model.identity)
 
     def generate(self, request: GenerationRequest, stop_requested: StopCheck) -> Generation:
+        model = self._ready(stop_requested)
+        stream = ChatStream()
+        body = chat_body(self._settings.model, request, thinking=model.thinking)
+        duration_ms = self._stream(body, stream, stop_requested)
+        return stream.result(model.identity, duration_ms)
+
+    def step(self, request: StepRequest, stop_requested: StopCheck) -> StepReply:
+        model = self._ready(stop_requested)
+        if not model.tools:
+            raise ModelUnavailableError("the model cannot call tools", code="no_tools")
+        stream = StepStream()
+        body = step_body(self._settings.model, request, thinking=model.thinking)
+        duration_ms = self._stream(body, stream, stop_requested)
+        return StepReply(stream.result(model.identity, duration_ms), stream.tool_calls)
+
+    def _ready(self, stop_requested: StopCheck) -> _Model:
         if stop_requested():
             raise GenerationStoppedError("generation stopped on request")
         # Re-inspected on every call, so the recorded identity and the locality and digest checks
         # always describe the model that actually answered.
-        model = self._inspect()
+        return self._inspect()
+
+    def _stream(
+        self, body: Mapping[str, Any], stream: "ChatStream", stop_requested: StopCheck
+    ) -> int:
         started = time.monotonic()
-        stream = ChatStream()
         connection = http.client.HTTPConnection(
             MODEL_HOST, self._settings.port, timeout=self._timeout
         )
         try:
-            response = _send(
-                connection,
-                "POST",
-                "/api/chat",
-                chat_body(self._settings.model, request, thinking=model.thinking),
-            )
+            response = _send(connection, "POST", "/api/chat", body)
             received = 0
             while True:
                 if stop_requested():
@@ -87,7 +110,7 @@ class OllamaProvider:
         finally:
             # Closing the connection is also how a stopped or cut-off generation ends early.
             connection.close()
-        return stream.result(model.identity, round((time.monotonic() - started) * 1000))
+        return round((time.monotonic() - started) * 1000)
 
     def _inspect(self) -> _Model:
         name = self._settings.model
@@ -119,7 +142,7 @@ class OllamaProvider:
                 "the model digest is not the pinned one", code="digest_mismatch"
             )
         identity = ModelIdentity(PROVIDER, name, digest, version)
-        return _Model(identity, "thinking" in capabilities)
+        return _Model(identity, "thinking" in capabilities, "tools" in capabilities)
 
     def _fetch(
         self, method: str, path: str, body: Mapping[str, Any] | None = None
@@ -190,8 +213,7 @@ class ChatStream:
         message = chunk.get("message", {})
         if not isinstance(message, Mapping):
             raise ProviderProtocolError("a streamed message is malformed")
-        if message.get("tool_calls"):
-            raise ProviderProtocolError("the model attempted a tool call", code="tool_call")
+        self._take_tool_calls(message.get("tool_calls"))
         content = message.get("content", "")
         if not isinstance(content, str):
             raise ProviderProtocolError("a streamed message is malformed")
@@ -214,6 +236,10 @@ class ChatStream:
         self._output_tokens = _count(chunk.get("eval_count", 0))
         return True
 
+    def _take_tool_calls(self, calls: object) -> None:
+        if calls:
+            raise ProviderProtocolError("the model attempted a tool call", code="tool_call")
+
     def result(self, identity: ModelIdentity, duration_ms: int) -> Generation:
         text, cut = bounded_text("".join(self._parts))
         if self._limited or cut or self._reason is None:
@@ -229,21 +255,89 @@ class ChatStream:
         )
 
 
+class StepStream(ChatStream):
+    # 0.34.2 streams each tool call whole, in its own chunk, before the final line (ADR-0020).
+    def __init__(self) -> None:
+        super().__init__()
+        self.tool_calls: tuple[ToolCall, ...] = ()
+
+    def _take_tool_calls(self, calls: object) -> None:
+        if not calls:
+            return
+        if not isinstance(calls, list):
+            raise ProviderProtocolError("a tool call is malformed")
+        self.tool_calls = (*self.tool_calls, *(parse_tool_call(call) for call in calls))
+        if len(self.tool_calls) > MAX_STEP_TOOL_CALLS:
+            raise ProviderProtocolError("the model proposed too many tool calls")
+
+
+def parse_tool_call(call: object) -> ToolCall:
+    function = call.get("function") if isinstance(call, Mapping) else None
+    if not isinstance(function, Mapping):
+        raise ProviderProtocolError("a tool call is malformed")
+    try:
+        return ToolCall(function.get("name"), function.get("arguments"))  # type: ignore[arg-type]
+    except InvalidGenerationError:
+        raise ProviderProtocolError("a tool call is malformed") from None
+
+
 def chat_body(model: str, request: GenerationRequest, *, thinking: bool) -> dict[str, Any]:
     # One user message and fixed options only: never tools, a response format or a system prompt.
+    messages = [{"role": "user", "content": request.prompt}]
+    return _body(
+        model, messages, request.temperature, request.seed, request.max_output_tokens, thinking
+    )
+
+
+def step_body(model: str, request: StepRequest, *, thinking: bool) -> dict[str, Any]:
+    # The conversation, the offered tools and fixed options only: never a response format.
+    messages = [_message(message) for message in request.messages]
+    body = _body(
+        model, messages, request.temperature, request.seed, request.max_output_tokens, thinking
+    )
+    body["tools"] = [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": dict(tool.parameters),
+            },
+        }
+        for tool in request.tools
+    ]
+    return body
+
+
+def _body(
+    model: str,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    seed: int,
+    max_output_tokens: int,
+    thinking: bool,
+) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
-        "messages": [{"role": "user", "content": request.prompt}],
+        "messages": messages,
         "stream": True,
-        "options": {
-            "temperature": request.temperature,
-            "seed": request.seed,
-            "num_predict": request.max_output_tokens,
-        },
+        "options": {"temperature": temperature, "seed": seed, "num_predict": max_output_tokens},
     }
     if thinking:
         body["think"] = False
     return body
+
+
+def _message(message: Message) -> dict[str, Any]:
+    wire: dict[str, Any] = {"role": message.role.value, "content": message.content}
+    if message.tool_calls:
+        wire["tool_calls"] = [
+            {"function": {"name": call.name, "arguments": dict(call.arguments)}}
+            for call in message.tool_calls
+        ]
+    if message.tool_name is not None:
+        wire["tool_name"] = message.tool_name
+    return wire
 
 
 def same_model(listed: object, configured: str) -> bool:
@@ -277,7 +371,7 @@ def _send(
 def _object(raw: bytes) -> dict[str, Any]:
     try:
         value = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise ProviderProtocolError("the model server sent malformed JSON") from None
     if not isinstance(value, dict):
         raise ProviderProtocolError("the model server sent malformed JSON")

@@ -13,7 +13,7 @@ Everything in AEGIS that might use a model must be shielded from the details of 
 
 | Area | Decision | Rationale |
 |---|---|---|
-| Contract | `aegis.model_providers.contract` defines `ModelIdentity` (provider, model, digest, runtime version; bounded as ADR-0015 describes), `GenerationRequest` (prompt, `max_output_tokens`, temperature, seed), `Generation` (text, finish reason, token counts, duration, identity) and `ProviderStatus` (healthy, a short detail code, identity). The `ModelProvider` protocol has two methods: `check()` and `generate(request, stop_requested)`. | Callers depend on a small, typed interface rather than on a model server. |
+| Contract | `aegis.model_providers.contract` defines `ModelIdentity` (provider, model, digest, runtime version; bounded as ADR-0015 describes), `GenerationRequest` (prompt, `max_output_tokens`, temperature, seed), `Generation` (text, finish reason, token counts, duration, identity) and `ProviderStatus` (healthy, a short detail code, identity). The `ModelProvider` protocol has two methods: `check()` and `generate(request, stop_requested)`. `StepProvider` extends it with `step(request, stop_requested)` for agents (ADR-0020). | Callers depend on a small, typed interface rather than on a model server. |
 | Errors | `ProviderUnavailableError` is the only retryable error. `ModelUnavailableError`, `ProviderProtocolError` and `GenerationStoppedError` are not retryable. Each class carries a `retryable` flag and a short `code` (for example `model_missing` or `digest_mismatch`, added in Increment 2). | The worker can map retries without knowing which provider is in use. |
 | Ceilings | Requests and generations validate themselves when created: a prompt of 1 byte to 16 KiB of UTF-8, 1–2048 output tokens, temperature 0–2, seed 0 to 2³¹−1. Output is at most 4 KiB of UTF-8, and `bounded_text()` cuts at a character boundary. A cut-off output reports `limit`. | These are the provider layer's technical ceilings. Task policy sets tighter limits inside them (ADR-0015). |
 | Mock | `MockProvider` is deterministic and offline. Its text is a pure function of the prompt (a fixed template with the prompt's SHA-256 prefix and word count), cut to `max_output_tokens`. Its identity is fixed: `mock` / `mock-1` with a constant digest. Scripted failures, delays that honour stop requests, and oversized output exist for tests and are reachable only through its constructor. | Tests and CI need no model, no network and no download. |
@@ -24,7 +24,7 @@ Everything in AEGIS that might use a model must be shielded from the details of 
 
 ## Consequences and limitations
 
-- **Only `generate` tasks call a provider** (ADR-0015), through the worker. The API never does.
+- **Only `generate` tasks call a provider** (ADR-0015), through the worker. The API never does. `step` has no caller until Phase 4's agent loop (ADR-0020).
 - **Approximate counts.** The mock's token counts are word counts, not real tokenization.
 - **No external providers.** None is shipped: the configuration accepts only `mock` and `ollama`. Adding one would need its own ADR, including how credentials are handled and how the local-only rule changes.
 - **Fixed host, configurable port.** A fixed `127.0.0.1` means an Ollama in a container must publish its port on the host's loopback (Increment 3).

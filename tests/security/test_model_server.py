@@ -20,7 +20,13 @@ from aegis.config.settings import (
 )
 from aegis.integrations.ollama.provider import OllamaProvider
 from aegis.jobs.worker import Worker
-from aegis.model_providers.contract import MAX_OUTPUT_BYTES
+from aegis.model_providers.contract import (
+    MAX_OUTPUT_BYTES,
+    GenerationStoppedError,
+    ModelProviderError,
+    ProviderProtocolError,
+)
+from aegis.model_providers.steps import MAX_STEP_TOOL_CALLS, MAX_TOOL_ARGUMENT_BYTES
 from aegis.tasks.repository import TaskRecord, get_task
 from aegis.tasks.service import Submission, TaskService
 from aegis.tasks.states import TaskState
@@ -32,7 +38,9 @@ from tests.fixtures.fake_ollama import (
     done_line,
     ndjson_line,
     serve,
+    tool_call_line,
 )
+from tests.fixtures.model_steps import SYSTEM, following_a_proposal, step_request
 from tests.fixtures.services import FAST_WORKER, PEPPER, RECORDER, Caller
 
 FAST = replace(FAST_WORKER, max_attempts=1)
@@ -208,4 +216,132 @@ def test_an_endless_stream_is_cut_to_the_output_limit(
     assert task.result["finish_reason"] == "limit"
     assert len(task.result["text"].encode()) <= MAX_OUTPUT_BYTES
     assert len(json.dumps(task.result).encode()) <= 8 * 1024
+    assert fake.disconnected.wait(5)
+
+
+def _stepping(fake: FakeOllama, port: int) -> OllamaProvider:
+    fake.capabilities = ["completion", "tools", "thinking"]
+    return OllamaProvider(OllamaSettings(port, MODEL, None), timeout_seconds=5)
+
+
+def test_only_the_conversation_the_tools_and_fixed_options_reach_the_model_server(
+    operator: Caller, fake: FakeOllama, port: int
+) -> None:
+    fake.lines = [content_line("Finished."), done_line()]
+
+    _stepping(fake, port).step(following_a_proposal(), lambda: False)
+
+    [body] = fake.requests
+    assert set(body) == {"model", "messages", "tools", "stream", "options", "think"}
+    assert body["options"] == {"temperature": 0.0, "seed": 0, "num_predict": 64}
+    assert (body["model"], body["stream"], body["think"]) == (MODEL, True, False)
+    assert body["messages"] == [
+        {"role": "system", "content": SYSTEM.content},
+        {"role": "user", "content": "Read a.txt."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "a.txt"}}}],
+        },
+        {"role": "tool", "content": "alpha", "tool_name": "read_file"},
+    ]
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["read_file", "write_file"]
+    received = "\n".join(fake.seen)
+    for secret in [PEPPER.reveal(), operator.token] + [
+        load_database_settings(os.environ, role).password.reveal() for role in DatabaseRole
+    ]:
+        assert secret not in received
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(tool_call_line(None, {}), id="no name"),
+        pytest.param(tool_call_line("Read File", {}), id="not an identifier"),
+        pytest.param(tool_call_line("read_file; rm -rf /", {}), id="injected name"),
+        pytest.param(tool_call_line("read_file", '{"path": "a.txt"}'), id="arguments as text"),
+        pytest.param(tool_call_line("read_file", ["a.txt"]), id="arguments as a list"),
+        pytest.param(
+            tool_call_line("write_file", {"content": "x" * (MAX_TOOL_ARGUMENT_BYTES + 1)}),
+            id="oversized arguments",
+        ),
+        pytest.param(
+            tool_call_line("write_file", {"deep": [[[[[[[[["x"]]]]]]]]]}), id="deep arguments"
+        ),
+        pytest.param(
+            ndjson_line(message={"role": "assistant", "tool_calls": "read_file"}, done=False),
+            id="calls are not a list",
+        ),
+        pytest.param(
+            ndjson_line(message={"role": "assistant", "tool_calls": [{"id": "1"}]}, done=False),
+            id="no function",
+        ),
+        pytest.param(b"[" * 40000 + b"\n", id="endless nesting"),
+    ],
+)
+def test_a_proposal_that_breaks_the_contract_is_a_protocol_error(
+    fake: FakeOllama, port: int, line: bytes
+) -> None:
+    fake.lines = [line, done_line()]
+
+    with pytest.raises(ProviderProtocolError):
+        _stepping(fake, port).step(step_request(), lambda: False)
+
+
+def test_a_model_cannot_propose_more_than_the_contract_allows(fake: FakeOllama, port: int) -> None:
+    fake.lines = [
+        *(tool_call_line("read_file", {"path": "a"}, n) for n in range(MAX_STEP_TOOL_CALLS + 1)),
+        done_line(),
+    ]
+
+    with pytest.raises(ProviderProtocolError, match="too many"):
+        _stepping(fake, port).step(step_request(), lambda: False)
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"capabilities": ["completion"]}, "no_tools"),
+        ({"show_extra": {"remote_host": "https://ollama.com:443"}}, "remote_model"),
+        ({"tags_extra": {"remote_model": "gpt-oss:120b"}}, "remote_model"),
+        ({"models": ["another:1b"]}, "model_missing"),
+    ],
+)
+def test_a_remote_missing_or_toolless_model_never_receives_the_conversation(
+    fake: FakeOllama, port: int, change: dict[str, Any], code: str
+) -> None:
+    provider = _stepping(fake, port)
+    for name, value in change.items():
+        setattr(fake, name, value)
+
+    with pytest.raises(ModelProviderError) as refused:
+        provider.step(step_request(), lambda: False)
+
+    assert refused.value.code == code
+    assert fake.requests == []
+
+
+def test_a_step_that_ends_early_gives_no_proposal(fake: FakeOllama, port: int) -> None:
+    fake.lines = [tool_call_line("read_file", {"path": "a.txt"})]
+
+    with pytest.raises(ModelProviderError) as cut:
+        _stepping(fake, port).step(step_request(), lambda: False)
+
+    assert cut.value.retryable
+
+
+def test_a_stop_request_closes_the_connection_to_the_model_server(
+    fake: FakeOllama, port: int
+) -> None:
+    fake.delay = 0.05
+    fake.lines = [content_line("word ") for _ in range(100)]
+    halt = threading.Event()
+    provider = _stepping(fake, port)
+    timer = threading.Timer(0.2, halt.set)
+    timer.start()
+
+    with pytest.raises(GenerationStoppedError):
+        provider.step(step_request(), halt.is_set)
+
+    timer.join()
     assert fake.disconnected.wait(5)

@@ -19,6 +19,17 @@ def content_line(text: str) -> bytes:
     return ndjson_line(model=MODEL, message={"role": "assistant", "content": text}, done=False)
 
 
+def tool_call_line(name: object, arguments: object, index: int = 0) -> bytes:
+    # As Ollama 0.34.2 streams one: whole, in its own chunk (ADR-0020).
+    function = {"index": index, "name": name, "arguments": arguments}
+    message = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": f"call_{index}", "function": function}],
+    }
+    return ndjson_line(model=MODEL, message=message, done=False)
+
+
 def done_line(reason: str = "stop") -> bytes:
     return ndjson_line(
         model=MODEL,
