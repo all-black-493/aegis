@@ -1,6 +1,8 @@
 import os
+import subprocess
 from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -11,13 +13,18 @@ from aegis.config.settings import (
     DatabaseSettings,
     SettingsError,
     load_database_settings,
+    load_runtime_settings,
 )
 from aegis.db.admin import bootstrap, recreate_test_database
 from aegis.db.engine import create_database_engine
 from aegis.db.migrate import upgrade
+from aegis.integrations.openshell.cli import VERIFIED_VERSION
+from aegis.integrations.openshell.runtime import OpenShellRuntime
 
 if TYPE_CHECKING:
     from tests.fixtures.services import Caller
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _settings(role: DatabaseRole) -> DatabaseSettings:
@@ -93,3 +100,31 @@ def operator(owner_engine: Engine) -> "Caller":
     from tests.fixtures.services import make_caller
 
     return make_caller(owner_engine, Role.OPERATOR, prefix="operator")
+
+
+@pytest.fixture(scope="session")
+def openshell_runtime() -> OpenShellRuntime:
+    runtime = OpenShellRuntime(load_runtime_settings(os.environ).openshell)
+    status = runtime.check()
+    if not status.healthy:
+        pytest.fail(
+            f"OpenShell is not usable ({status.detail}): install OpenShell {VERIFIED_VERSION}"
+            " and run `make openshell-init`; see the getting-started guide"
+        )
+    return runtime
+
+
+@pytest.fixture(scope="session")
+def probe_image() -> str:
+    # Built by the same `make openshell-image` an operator runs, offline and without pulling.
+    built = subprocess.run(
+        ["make", "--no-print-directory", "openshell-image"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    line = built.stdout.strip().splitlines()[-1] if built.stdout.strip() else ""
+    if built.returncode != 0 or not line.startswith("AEGIS_OPENSHELL_IMAGE=sha256:"):
+        pytest.fail(f"the probe image did not build: {built.stderr.strip()[-300:]}")
+    return line.split("=", 1)[1]

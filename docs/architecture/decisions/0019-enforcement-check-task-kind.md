@@ -39,3 +39,4 @@ The probes (ADR-0018) verify OpenShell's enforcement from outside the sandbox, b
 - **A check stopped by shutdown can leave its sandbox behind** if the deletion outlasts the worker's grace period. The next sweep removes it.
 - **A running worker's sweep deletes the live tests' sandboxes**, because they belong to no job in its database (ADR-0017). Stop the worker before `make test-openshell`.
 - **At-least-once delivery.** A check may run again after a crash or a lost lease. Each attempt has its own sandbox and its own `enforcement.checked` events.
+- **A verified check can leave a sandbox behind.** If deletion fails after the verdict, the task keeps its result, `sandbox.deleted` records the failure, and the next sweep removes the sandbox. The verdict was reached first, so a cleanup failure does not change it.

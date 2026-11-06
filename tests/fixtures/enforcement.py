@@ -9,10 +9,12 @@ from aegis.config.settings import WorkerSettings
 from aegis.jobs.enforcement import EnforcementCheck
 from aegis.jobs.worker import Worker
 from aegis.runtime.contract import SandboxRuntime
+from aegis.runtime.probes.catalog import PROBES
 from aegis.tasks.repository import TaskRecord
 from aegis.tasks.service import Submission, TaskService
 from tests.fixtures import records
-from tests.fixtures.probe_answers import FakeCanary, control_hits
+from tests.fixtures.fake_openshell import FakeOpenShell
+from tests.fixtures.probe_answers import FakeCanary, argv, control_hits
 from tests.fixtures.services import FAST_WORKER, RECORDER
 
 RUN = "c4ec4ec4"
@@ -55,3 +57,9 @@ def checked(owner_engine: Engine, task_id: UUID) -> dict[str, dict[str, Any]]:
         id=task_id,
     )
     return {row["details"]["check"]: row for row in found}
+
+
+def probe_execs(fake: FakeOpenShell) -> int:
+    probes = {" ".join(argv(probe, RUN)) for probe in PROBES}
+    commands = [c["argv"] for c in fake.calls() if "exec" in c["argv"]]
+    return sum(" ".join(command[command.index("--") + 1 :]) in probes for command in commands)
