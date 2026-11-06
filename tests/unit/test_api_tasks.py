@@ -11,14 +11,10 @@ from sqlalchemy import create_engine
 from aegis.apps.api.app import create_app
 from aegis.apps.api.auth import require_actor
 from aegis.apps.api.context import ApiContext
+from aegis.apps.api.deps import task_service
+from aegis.apps.api.pagination import decode_cursor, encode_cursor
 from aegis.apps.api.problems import ApiError
-from aegis.apps.api.tasks import (
-    TaskSubmission,
-    decode_cursor,
-    encode_cursor,
-    task_service,
-    view,
-)
+from aegis.apps.api.schemas.tasks import TaskSubmission, view
 from aegis.audit.recorder import AuditRecorder
 from aegis.authorization.access import ActorContext
 from aegis.authorization.catalog import IdentityKind, Role

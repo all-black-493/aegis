@@ -5,7 +5,7 @@ from typing import NoReturn
 
 import pytest
 from fastapi import APIRouter, FastAPI
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import create_engine
@@ -14,8 +14,9 @@ from aegis.apps.api import auth
 from aegis.apps.api.app import create_app
 from aegis.apps.api.auth import require_actor
 from aegis.apps.api.context import ApiContext
+from aegis.apps.api.health import router as health
 from aegis.apps.api.middleware import MAX_BODY_BYTES
-from aegis.apps.api.routes import health, v1
+from aegis.apps.api.v1.router import router as v1
 from aegis.audit.recorder import AuditRecorder
 from aegis.config.logs import Redactor, configure_logging
 from aegis.config.settings import (
@@ -88,11 +89,10 @@ def log_output() -> Iterator[io.StringIO]:
 
 def _routes(*routers: APIRouter) -> set[tuple[str, str]]:
     return {
-        (method, route.path)
+        (method, str(context.path))
         for router in routers
-        for route in router.routes
-        if isinstance(route, APIRoute)
-        for method in route.methods or ()
+        for context in iter_route_contexts(router.routes)
+        for method in context.methods or ()
     }
 
 
@@ -101,12 +101,16 @@ def test_the_api_exposes_only_health_me_and_tasks() -> None:
 
 
 def test_every_v1_route_requires_authentication(client: TestClient) -> None:
-    assert v1.routes
-    for route in v1.routes:
+    contexts = list(iter_route_contexts(v1.routes))
+    assert {context.path for context in contexts} == {
+        path for _, path in PRODUCTION_ROUTES if path.startswith("/v1/")
+    }
+    for context in contexts:
+        route = context.route
         assert isinstance(route, APIRoute)
-        assert any(d.call is require_actor for d in route.dependant.dependencies), route.path
-        for method in route.methods or ():
-            assert client.request(method, route.path).status_code == 401, route.path
+        assert any(d.call is require_actor for d in route.dependant.dependencies), context.path
+        for method in context.methods or ():
+            assert client.request(method, str(context.path)).status_code == 401, context.path
 
 
 @pytest.mark.parametrize(

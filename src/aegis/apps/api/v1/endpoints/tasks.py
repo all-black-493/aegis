@@ -1,32 +1,20 @@
-import logging
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 
-from aegis.apps.api.auth import require_actor
-from aegis.apps.api.context import api_context, request_id
+from aegis.apps.api.context import request_id
+from aegis.apps.api.deps import Actor, idempotency_key, submission_body, task_service
+from aegis.apps.api.pagination import DEFAULT_PAGE_SIZE, decode_cursor, encode_cursor
 from aegis.apps.api.problems import ApiError, problem
-from aegis.apps.api.tasks import (
-    DEFAULT_PAGE_SIZE,
+from aegis.apps.api.schemas.tasks import (
     SUBMIT_OPENAPI,
     TaskPage,
     TaskSubmission,
     TaskView,
-    decode_cursor,
-    encode_cursor,
-    idempotency_key,
-    submission_body,
-    task_service,
     view,
 )
-from aegis.authorization.access import ActorContext
-from aegis.db.migrate import schema_status
-from aegis.identity.schema import identities
 from aegis.tasks.repository import TaskRecord
 from aegis.tasks.service import (
     MAX_PAGE_SIZE,
@@ -37,72 +25,11 @@ from aegis.tasks.service import (
 )
 from aegis.tasks.transitions import TaskNotFoundError
 
-logger = logging.getLogger("aegis.api")
-
-health = APIRouter(prefix="/health", tags=["health"])
-v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_actor)])
+router = APIRouter(prefix="/tasks")
 
 
-class Status(BaseModel):
-    status: str
-
-
-class Me(BaseModel):
-    identity_id: UUID
-    name: str
-    kind: str
-    roles: list[str]
-    credential_id: UUID | None
-
-
-@health.get("/live")
-def live() -> Status:
-    return Status(status="alive")
-
-
-@health.get("/ready", response_model=Status, responses={503: {"description": "Not ready"}})
-def ready(request: Request) -> Response:
-    try:
-        with api_context(request).engine.connect() as connection:
-            schema = schema_status(connection)
-    except SQLAlchemyError as error:
-        logger.warning(
-            "not ready: database unavailable: %s",
-            type(error).__name__,
-            extra={"request_id": request_id(request)},
-        )
-        return problem(503, "not_ready")
-    if not schema.ready:
-        logger.warning(
-            "not ready: schema at %s, expected %s",
-            schema.current,
-            schema.head,
-            extra={"request_id": request_id(request)},
-        )
-        return problem(503, "not_ready")
-    return JSONResponse(Status(status="ready").model_dump())
-
-
-@v1.get("/me")
-def me(request: Request, actor: Annotated[ActorContext, Depends(require_actor)]) -> Me:
-    with api_context(request).engine.connect() as connection:
-        name = connection.execute(
-            select(identities.c.name).where(identities.c.id == actor.identity_id)
-        ).scalar_one()
-    return Me(
-        identity_id=actor.identity_id,
-        name=name,
-        kind=actor.kind.value,
-        roles=sorted(role.value for role in actor.roles),
-        credential_id=actor.credential_id,
-    )
-
-
-Actor = Annotated[ActorContext, Depends(require_actor)]
-
-
-@v1.post(
-    "/tasks",
+@router.post(
+    "",
     status_code=201,
     response_model=TaskView,
     responses={200: {"model": TaskView, "description": "Replayed"}},
@@ -127,7 +54,7 @@ def submit_task(
     return _task(task, 201, {"Location": f"/v1/tasks/{task.task_id}"})
 
 
-@v1.get("/tasks", response_model=TaskPage)
+@router.get("", response_model=TaskPage)
 def list_tasks(
     request: Request,
     actor: Actor,
@@ -149,7 +76,7 @@ def list_tasks(
     return JSONResponse(body.model_dump(mode="json"))
 
 
-@v1.get("/tasks/{task_id}", response_model=TaskView)
+@router.get("/{task_id}", response_model=TaskView)
 def get_task(request: Request, actor: Actor, task_id: UUID) -> Response:
     try:
         task = task_service(request).get(actor, task_id, request_id(request))
@@ -158,7 +85,7 @@ def get_task(request: Request, actor: Actor, task_id: UUID) -> Response:
     return _task(task, 200)
 
 
-@v1.post("/tasks/{task_id}/cancel", response_model=TaskView)
+@router.post("/{task_id}/cancel", response_model=TaskView)
 def cancel_task(request: Request, actor: Actor, task_id: UUID) -> Response:
     try:
         cancelled = task_service(request).cancel(actor, task_id, request_id(request))
