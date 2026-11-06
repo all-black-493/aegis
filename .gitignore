@@ -26,3 +26,9 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Agent skills installed per developer: one copy per tool, and the lock file that lists them.
+/.*/skills
+/data/skills
+/skills
+/skills-lock.json
